@@ -114,7 +114,8 @@ const makeApiRequest = async (endpoint, options = {}) => {
   const { cleanEndpoint, extractedToken } = prepareSecureRequest(endpoint);
 
   const directUrl = `${serverUrl.replace(/\/$/, '')}${endpoint}`;
-  const proxyUrl = `/quepasa-proxy${cleanEndpoint}`;
+  // Keep original query params (including token) so QuePasa API can parse token in query string
+  const proxyUrl = `/quepasa-proxy${endpoint}`;
 
   const headers = {
     'Content-Type': 'application/json',
@@ -136,6 +137,7 @@ const makeApiRequest = async (endpoint, options = {}) => {
     }).catch(async (proxyErr) => {
       return await fetch(directUrl, { ...options, headers });
     });
+
 
     if (!response.ok && response.status !== 204) {
       throw new Error(`QuePasa API HTTP ${response.status}: ${response.statusText}`);
@@ -169,9 +171,10 @@ const makeApiBlobRequest = async (endpoint, options = {}) => {
   const { cleanEndpoint, extractedToken } = prepareSecureRequest(endpoint);
 
   const directUrl = `${serverUrl.replace(/\/$/, '')}${endpoint}`;
-  const proxyUrl = `/quepasa-proxy${cleanEndpoint}`;
+  const proxyUrl = `/quepasa-proxy${endpoint}`;
 
   const headers = {
+
     ...(extractedToken ? { 'x-quepasa-token': extractedToken } : {}),
     ...(apiKey ? { 
       'Authorization': apiKey.startsWith('Basic ') ? apiKey : `Bearer ${apiKey}`,
