@@ -114,8 +114,8 @@ const makeApiRequest = async (endpoint, options = {}) => {
   const { cleanEndpoint, extractedToken } = prepareSecureRequest(endpoint);
 
   const directUrl = `${serverUrl.replace(/\/$/, '')}${endpoint}`;
-  // Keep original query params (including token) so QuePasa API can parse token in query string
-  const proxyUrl = `/quepasa-proxy${endpoint}`;
+  // Use cleanEndpoint so token parameter is omitted from browser Network tab and added server-side by proxy
+  const proxyUrl = `/quepasa-proxy${cleanEndpoint}`;
 
   const headers = {
     'Content-Type': 'application/json',
@@ -171,7 +171,7 @@ const makeApiBlobRequest = async (endpoint, options = {}) => {
   const { cleanEndpoint, extractedToken } = prepareSecureRequest(endpoint);
 
   const directUrl = `${serverUrl.replace(/\/$/, '')}${endpoint}`;
-  const proxyUrl = `/quepasa-proxy${endpoint}`;
+  const proxyUrl = `/quepasa-proxy${cleanEndpoint}`;
 
   const headers = {
 
