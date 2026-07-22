@@ -194,6 +194,15 @@ export default function App() {
     }
   };
 
+  // Update instance token handler
+  const handleUpdateToken = (id, newToken) => {
+    const updatedList = instances.map((inst) =>
+      inst.id === id ? { ...inst, token: newToken } : inst
+    );
+    updateInstancesState(updatedList);
+    showToast(`Token da instância atualizado com sucesso!`);
+  };
+
   // Create new instance handler
   const handleCreateInstance = async (newInstance) => {
     const updatedList = [newInstance, ...instances];
@@ -207,6 +216,7 @@ export default function App() {
     // Open connect modal immediately to scan QR code
     setConnectingInstance(newInstance);
   };
+
 
   // Test Webhook n8n Payload Sender
   const handleTestWebhookPayload = async (instance) => {
@@ -332,8 +342,9 @@ export default function App() {
                 onConnect={handleStartConnect}
                 onDisconnect={handleDisconnect}
                 onDelete={handleDeleteInstance}
-                onTestWebhook={handleTestWebhookPayload}
+                onUpdateToken={handleUpdateToken}
               />
+
             ))}
           </div>
         ) : (

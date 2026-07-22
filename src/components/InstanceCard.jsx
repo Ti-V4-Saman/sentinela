@@ -17,16 +17,26 @@ export default function InstanceCard({
   instance, 
   onConnect, 
   onDisconnect, 
-  onDelete
+  onDelete,
+  onUpdateToken
 }) {
   const [showToken, setShowToken] = useState(false);
   const [copied, setCopied] = useState(false);
   const [imgError, setImgError] = useState(false);
+  const [isEditingToken, setIsEditingToken] = useState(false);
+  const [tokenInput, setTokenInput] = useState(instance.token || '');
 
   const handleCopyToken = () => {
     navigator.clipboard.writeText(instance.token);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
+  };
+
+  const handleSaveToken = () => {
+    if (tokenInput.trim() && onUpdateToken) {
+      onUpdateToken(instance.id, tokenInput.trim());
+    }
+    setIsEditingToken(false);
   };
 
   const isConnected = instance.status === 'Connected';
@@ -48,38 +58,67 @@ export default function InstanceCard({
             {instance.name}
           </h3>
           <button 
-            title="Configurações da Instância"
-            className="text-slate-400 hover:text-white p-1 rounded-md hover:bg-dark-hover transition-colors shrink-0"
+            title="Editar Token da Instância"
+            onClick={() => setIsEditingToken(!isEditingToken)}
+            className={`p-1 rounded-md transition-colors shrink-0 ${isEditingToken ? 'text-brand-emerald bg-dark-hover' : 'text-slate-400 hover:text-white hover:bg-dark-hover'}`}
           >
             <Settings className="w-4 h-4" />
           </button>
         </div>
 
-        {/* Masked Token Input Container matching Evolution API screenshot */}
-        <div className="bg-dark-input border border-dark-border rounded-lg px-3 py-2 flex items-center justify-between gap-2 mb-4">
-          <div className="flex items-center gap-2 min-w-0">
-            <Lock className="w-3.5 h-3.5 text-slate-500 shrink-0" />
-            <span className="font-mono text-xs text-slate-300 truncate select-none">
-              {showToken ? `${instance.token.slice(0, 8)}-****-****-****-${instance.token.slice(-4)}` : '••••••••-••••-••••-••••-••••••••••••'}
-            </span>
+        {/* Edit Token Form or Masked Token Container */}
+        {isEditingToken ? (
+          <div className="bg-dark-input border border-brand-emerald/50 rounded-lg p-2 mb-4 space-y-2 animate-in fade-in duration-150">
+            <label className="block text-[10px] uppercase font-mono text-slate-400">Token do QuePasa:</label>
+            <input 
+              type="text"
+              value={tokenInput}
+              onChange={(e) => setTokenInput(e.target.value)}
+              placeholder="Cole o token UUID aqui"
+              className="w-full bg-dark-surface border border-dark-border rounded px-2 py-1 text-xs font-mono text-white focus:outline-none focus:border-brand-emerald"
+            />
+            <div className="flex items-center justify-end gap-1.5 pt-1">
+              <button
+                onClick={() => { setTokenInput(instance.token); setIsEditingToken(false); }}
+                className="px-2 py-0.5 text-[10px] text-slate-400 hover:text-white"
+              >
+                Cancelar
+              </button>
+              <button
+                onClick={handleSaveToken}
+                className="px-2.5 py-0.5 text-[10px] font-semibold bg-brand-emerald text-black rounded hover:bg-brand-emeraldDark"
+              >
+                Salvar
+              </button>
+            </div>
           </div>
-          <div className="flex items-center gap-1.5 shrink-0 text-slate-400">
-            <button 
-              onClick={handleCopyToken}
-              title={copied ? "Copiado!" : "Copiar Token"}
-              className="hover:text-brand-emerald p-1 rounded transition-colors"
-            >
-              {copied ? <Check className="w-3.5 h-3.5 text-brand-emerald" /> : <Copy className="w-3.5 h-3.5" />}
-            </button>
-            <button 
-              onClick={() => setShowToken(!showToken)}
-              title={showToken ? "Ocultar Token" : "Visualizar Token (Requer Login)"}
-              className="hover:text-white p-1 rounded transition-colors"
-            >
-              {showToken ? <EyeOff className="w-3.5 h-3.5 text-brand-emerald" /> : <Eye className="w-3.5 h-3.5" />}
-            </button>
+        ) : (
+          <div className="bg-dark-input border border-dark-border rounded-lg px-3 py-2 flex items-center justify-between gap-2 mb-4">
+            <div className="flex items-center gap-2 min-w-0">
+              <Lock className="w-3.5 h-3.5 text-slate-500 shrink-0" />
+              <span className="font-mono text-xs text-slate-300 truncate select-none">
+                {showToken ? `${instance.token.slice(0, 8)}-****-****-****-${instance.token.slice(-4)}` : '••••••••-••••-••••-••••-••••••••••••'}
+              </span>
+            </div>
+            <div className="flex items-center gap-1.5 shrink-0 text-slate-400">
+              <button 
+                onClick={handleCopyToken}
+                title={copied ? "Copiado!" : "Copiar Token"}
+                className="hover:text-brand-emerald p-1 rounded transition-colors"
+              >
+                {copied ? <Check className="w-3.5 h-3.5 text-brand-emerald" /> : <Copy className="w-3.5 h-3.5" />}
+              </button>
+              <button 
+                onClick={() => setShowToken(!showToken)}
+                title={showToken ? "Ocultar Token" : "Visualizar Token (Requer Login)"}
+                className="hover:text-white p-1 rounded transition-colors"
+              >
+                {showToken ? <EyeOff className="w-3.5 h-3.5 text-brand-emerald" /> : <Eye className="w-3.5 h-3.5" />}
+              </button>
+            </div>
           </div>
-        </div>
+        )}
+
 
 
         {/* Profile Info: Avatar, Name, Phone & Stats */}
