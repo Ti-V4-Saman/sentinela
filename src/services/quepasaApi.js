@@ -122,15 +122,10 @@ const makeApiRequest = async (endpoint, options = {}) => {
     'Cache-Control': 'no-cache, no-store, must-revalidate',
     'Pragma': 'no-cache',
     ...(extractedToken ? { 'x-quepasa-token': extractedToken } : {}),
-    ...(apiKey ? { 
-      'Authorization': apiKey.startsWith('Basic ') ? apiKey : `Bearer ${apiKey}`,
-      'apikey': apiKey,
-      'secret': apiKey,
-      'x-secret': apiKey,
-      'signing-secret': apiKey,
-    } : {}),
+    ...(apiKey ? { 'Authorization': apiKey.startsWith('Basic ') ? apiKey : `Bearer ${apiKey}` } : {}),
     ...options.headers,
   };
+
 
   try {
     const response = await fetch(proxyUrl, {
@@ -388,19 +383,17 @@ const fetchProfileInfo = async (token, wid, cleanPhone) => {
     let avatarUrl = '';
     let pushname = '';
 
-    // 1. Fetch profile picture via /v3/bot/{token}/picinfo
+    // 1. Fetch profile picture via /v3/bot/self/picinfo (token hidden in x-quepasa-token header)
     if (cleanJid) {
       try {
-        const proxyPicUrl = `/quepasa-proxy/v3/bot/${encodeURIComponent(token)}/picinfo`;
-        const directPicUrl = `${baseUrl}/v3/bot/${encodeURIComponent(token)}/picinfo`;
+        const proxyPicUrl = `/quepasa-proxy/v3/bot/self/picinfo`;
         const body = JSON.stringify({ chatid: cleanJid });
         const headers = {
           'Content-Type': 'application/json',
-          ...(apiKey ? { 'secret': apiKey, 'x-secret': apiKey } : {}),
+          'x-quepasa-token': token,
         };
 
-        const res = await fetch(proxyPicUrl, { method: 'POST', headers, body })
-          .catch(() => fetch(directPicUrl, { method: 'POST', headers, body }));
+        const res = await fetch(proxyPicUrl, { method: 'POST', cache: 'no-store', headers, body });
 
         if (res.ok) {
           const data = await res.json().catch(() => ({}));
@@ -410,6 +403,7 @@ const fetchProfileInfo = async (token, wid, cleanPhone) => {
         console.warn('[ProfilePic Fetch Error]', e.message);
       }
     }
+
 
     // 2. Fetch real WhatsApp contact name via GET /contacts
     try {
