@@ -1,0 +1,54 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    background-color: #06110f;
+    color: #e2e8f0;
+    font-family: 'Inter', sans-serif;
+  }
+}
+
+/* Custom Scrollbar */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: #06110f;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #1a3a33;
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #00c885;
+}
+
+/* Pulse Animation for Connected Status */
+@keyframes pulse-emerald {
+  0%, 100% {
+    box-shadow: 0 0 0 0 rgba(0, 200, 133, 0.4);
+  }
+  50% {
+    box-shadow: 0 0 0 8px rgba(0, 200, 133, 0);
+  }
+}
+
+.status-pulse-connected {
+  animation: pulse-emerald 2s infinite;
+}
+
+/* Card Glow Effect */
+.card-glow {
+  transition: all 0.25s ease-in-out;
+}
+
+.card-glow:hover {
+  border-color: #1ed796;
+  box-shadow: 0 4px 20px -2px rgba(0, 200, 133, 0.15);
+}
