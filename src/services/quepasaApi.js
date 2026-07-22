@@ -393,17 +393,16 @@ const fetchProfileInfo = async (token, wid, cleanPhone) => {
           'x-quepasa-token': token,
         };
 
-        const res = await fetch(proxyPicUrl, { method: 'POST', cache: 'no-store', headers, body });
+        const res = await fetch(proxyPicUrl, { method: 'POST', cache: 'no-store', headers, body }).catch(() => null);
 
-        if (res.ok) {
+        if (res && res.ok) {
           const data = await res.json().catch(() => ({}));
           avatarUrl = data.info?.url || data.url || data.picture || data.profilepicurl || '';
         }
-      } catch (e) {
-        console.warn('[ProfilePic Fetch Error]', e.message);
+      } catch {
+        // Ignore temporary profile pic unavailability
       }
     }
-
 
     // 2. Fetch real WhatsApp contact name via GET /contacts
     try {
@@ -424,8 +423,8 @@ const fetchProfileInfo = async (token, wid, cleanPhone) => {
           pushname = match.title || match.name || match.pushname || '';
         }
       }
-    } catch (e) {
-      console.warn('[Contacts Name Fetch Error]', e.message);
+    } catch {
+      // Ignore temporary contacts unavailability
     }
 
     return {
@@ -436,6 +435,7 @@ const fetchProfileInfo = async (token, wid, cleanPhone) => {
     return {};
   }
 };
+
 
 /**
  * Check real-time connection status of an instance against QuePasa server.
