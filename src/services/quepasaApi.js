@@ -119,6 +119,8 @@ const makeApiRequest = async (endpoint, options = {}) => {
 
   const headers = {
     'Content-Type': 'application/json',
+    'Cache-Control': 'no-cache, no-store, must-revalidate',
+    'Pragma': 'no-cache',
     ...(extractedToken ? { 'x-quepasa-token': extractedToken } : {}),
     ...(apiKey ? { 
       'Authorization': apiKey.startsWith('Basic ') ? apiKey : `Bearer ${apiKey}`,
@@ -133,9 +135,10 @@ const makeApiRequest = async (endpoint, options = {}) => {
   try {
     const response = await fetch(proxyUrl, {
       ...options,
+      cache: 'no-store',
       headers,
     }).catch(async (proxyErr) => {
-      return await fetch(directUrl, { ...options, headers });
+      return await fetch(directUrl, { ...options, cache: 'no-store', headers });
     });
 
 
@@ -174,7 +177,8 @@ const makeApiBlobRequest = async (endpoint, options = {}) => {
   const proxyUrl = `/quepasa-proxy${cleanEndpoint}`;
 
   const headers = {
-
+    'Cache-Control': 'no-cache, no-store, must-revalidate',
+    'Pragma': 'no-cache',
     ...(extractedToken ? { 'x-quepasa-token': extractedToken } : {}),
     ...(apiKey ? { 
       'Authorization': apiKey.startsWith('Basic ') ? apiKey : `Bearer ${apiKey}`,
@@ -186,8 +190,12 @@ const makeApiBlobRequest = async (endpoint, options = {}) => {
     ...options.headers,
   };
 
-  const response = await fetch(proxyUrl, { ...options, headers }).catch(async () => {
-    return await fetch(directUrl, { ...options, headers });
+  const response = await fetch(proxyUrl, {
+    ...options,
+    cache: 'no-store',
+    headers,
+  }).catch(async () => {
+    return await fetch(directUrl, { ...options, cache: 'no-store', headers });
   });
 
   if (!response.ok) {
