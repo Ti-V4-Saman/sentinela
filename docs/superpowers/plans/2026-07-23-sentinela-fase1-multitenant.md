@@ -129,13 +129,20 @@ module.exports = {
       password: process.env.DB_PASSWORD,
       database: process.env.DB_NAME,
     },
-    migrations: { directory: './migrations', tableName: 'knex_migrations' },
+    migrations: {
+      directory: './migrations',
+      tableName: 'knex_migrations',
+      // Projeto é ESM ("type":"module"); migrations usam CommonJS (exports.up),
+      // então precisam ser .cjs — senão o Node trata como ESM e `exports` quebra.
+      extension: 'cjs',
+      loadExtensions: ['.cjs'],
+    },
     pool: { min: 0, max: 10 },
   },
 };
 ```
 
-Nota: Knex usa o ambiente `development` por padrão quando `NODE_ENV` não está setado. Os scripts npm não setam `NODE_ENV`, então caem em `development` → banco `sentinela`.
+Nota: Knex usa o ambiente `development` por padrão quando `NODE_ENV` não está setado. Os scripts npm não setam `NODE_ENV`, então caem em `development` → banco `sentinela`. **Todos os arquivos de migration DEVEM ter extensão `.cjs`** (gerar com `npm run migrate:make -- <nome> -x cjs`).
 
 - [ ] **Step 3: Validar conexão do Knex**
 
@@ -324,7 +331,7 @@ Expected: **PASSA já** — as 6 tabelas pré-existem no banco `sentinela`, ent�
 - [ ] **Step 3: Gerar e escrever a migration baseline**
 
 ```bash
-npm --prefix /Users/felipesaman/Documents/GitHub/sentinela.nosync run migrate:make -- baseline
+npm --prefix /Users/felipesaman/Documents/GitHub/sentinela.nosync run migrate:make -- baseline -x cjs
 ```
 
 Conteúdo do arquivo gerado em `migrations/<ts>_baseline.cjs`. Usa `CREATE TABLE IF NOT EXISTS` (idempotente: no-op no `sentinela`, cria em ambiente vazio):
