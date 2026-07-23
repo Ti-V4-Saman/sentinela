@@ -16,14 +16,12 @@ docker run --rm \
   sh -c "npm install && npm run build"
 
 echo ""
-echo "[3/3] Copiando Frontend para o Nginx e (re)iniciando o Backend..."
-cp -r dist/. /home/sentinela/dist/
+echo "[3/3] (Re)iniciando o Backend Node.js..."
 docker rm -f sentinella_dashboard_app 2>/dev/null || true
 docker-compose up -d --build
 
 echo ""
 echo "==========================================="
 echo "   Atualização concluída com sucesso!"
-echo "   Frontend atualizado em /home/sentinela/dist"
 echo "   Backend rodando na porta 3005"
 echo "==========================================="
