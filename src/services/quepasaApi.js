@@ -1,5 +1,7 @@
 // QuePasa WhatsApp Service & Webhook Integration Layer
 
+import { getAuthHeaders } from './authApi';
+
 export const MANDATORY_WEBHOOK_URL = 'https://n8.v4saman.com/webhook/sentinela-whatsapp-v4';
 
 const STORAGE_KEYS = {
@@ -67,15 +69,10 @@ export const saveServerConfig = (serverUrl, apiKey, useMock) => {
 
 // DB API Helpers
 const API_BASE = '/api/instances';
-const API_KEY = import.meta.env.VITE_API_SECRET_KEY || '';
-const API_HEADERS = {
-  'Content-Type': 'application/json',
-  'X-Sentinela-Key': API_KEY,
-};
 
 export const fetchInstancesApi = async () => {
   try {
-    const res = await fetch(API_BASE, { headers: API_HEADERS });
+    const res = await fetch(API_BASE, { headers: getAuthHeaders() });
     if (!res.ok) throw new Error('Failed to fetch instances');
     return await res.json();
   } catch (e) {
@@ -88,7 +85,7 @@ export const createInstanceApi = async (instance) => {
   try {
     const res = await fetch(API_BASE, {
       method: 'POST',
-      headers: API_HEADERS,
+      headers: getAuthHeaders(),
       body: JSON.stringify(instance),
     });
     if (!res.ok) throw new Error('Failed to create instance');
@@ -103,7 +100,7 @@ export const updateInstanceApi = async (id, data) => {
   try {
     const res = await fetch(`${API_BASE}/${id}`, {
       method: 'PUT',
-      headers: API_HEADERS,
+      headers: getAuthHeaders(),
       body: JSON.stringify(data),
     });
     if (!res.ok) throw new Error('Failed to update instance');
@@ -118,7 +115,7 @@ export const deleteInstanceApi = async (id) => {
   try {
     const res = await fetch(`${API_BASE}/${id}`, {
       method: 'DELETE',
-      headers: API_HEADERS,
+      headers: getAuthHeaders(),
     });
     if (!res.ok) throw new Error('Failed to delete instance');
     return await res.json();

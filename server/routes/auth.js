@@ -3,6 +3,10 @@ import rateLimit from 'express-rate-limit';
 import { verifyPassword } from '../auth/password.js';
 import { signToken } from '../auth/jwt.js';
 
+// Hash "descartável" para igualar o tempo de resposta quando o email não existe,
+// evitando enumeração de usuários por timing (sempre roda um bcrypt compare).
+const DUMMY_HASH = '$2b$12$FbAgGjdHYmtKMpi0.TQazOSrlTyRJnA.2mndpwYAznGvc.5I8CtcK';
+
 const loginLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 10,
@@ -22,8 +26,10 @@ export function createAuthRouter(pool) {
         "SELECT id, tenant_id, name, password_hash, role, status FROM users WHERE email = ? LIMIT 1",
         [email]);
       const user = rows[0];
-      // Resposta uniforme para não vazar existência do email
-      if (!user || user.status !== 'active' || !(await verifyPassword(password, user.password_hash))) {
+      // Sempre executa um bcrypt compare (contra o hash real ou o dummy) para que
+      // o tempo de resposta não revele se o email existe. Resposta uniforme.
+      const passwordOk = await verifyPassword(password, user ? user.password_hash : DUMMY_HASH);
+      if (!user || user.status !== 'active' || !passwordOk) {
         return res.status(401).json({ error: 'Credenciais inválidas' });
       }
       const token = signToken({ userId: user.id, tenantId: user.tenant_id, role: user.role });

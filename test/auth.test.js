@@ -95,4 +95,12 @@ describe('POST /api/auth/login (em transação com rollback)', () => {
       expect(res.status).toBe(401);
     });
   });
+  it('401 para email inexistente (sem vazar existência)', async () => {
+    await withTx(async (conn) => {
+      const res = await request(appWith(conn)).post('/api/auth/login')
+        .send({ email: 'naoexiste@__test__', password: 'qualquer' });
+      expect(res.status).toBe(401);
+      expect(res.body.error).toBe('Credenciais inválidas');
+    });
+  });
 });
