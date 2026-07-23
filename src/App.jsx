@@ -5,8 +5,10 @@ import ConnectModal from './components/ConnectModal';
 import ServerConfigModal from './components/ServerConfigModal';
 import CreateInstanceModal from './components/CreateInstanceModal';
 import {
-  getStoredInstances,
-  saveInstancesToStorage,
+  fetchInstancesApi,
+  createInstanceApi,
+  updateInstanceApi,
+  deleteInstanceApi,
   getStoredServerConfig,
   disconnectQuePasaInstance,
   checkInstanceRealtimeStatus,
@@ -46,19 +48,17 @@ export default function App() {
 
   // Initial Load
   useEffect(() => {
-    // Remove any fake/demo instances carried over from previous sessions
     purgeFakeInstances();
     const config = getStoredServerConfig();
     setServerConfig(config);
-    const loadedInstances = getStoredInstances();
-    setInstances(loadedInstances);
+    
+    // Fetch instances from Backend API
+    const loadInstances = async () => {
+      const loadedInstances = await fetchInstancesApi();
+      setInstances(loadedInstances);
+    };
+    loadInstances();
   }, []);
-
-  // Save changes to storage whenever instances update
-  const updateInstancesState = (newInstances) => {
-    setInstances(newInstances);
-    saveInstancesToStorage(newInstances);
-  };
 
   // Ref to hold latest instances for background polling without stale closures
   const instancesRef = React.useRef(instances);
@@ -70,7 +70,7 @@ export default function App() {
       const currentList = instancesRef.current;
       if (!currentList || currentList.length === 0) return;
 
-      let hasChanges = false;
+      let stateNeedsUpdate = false;
       const updatedList = await Promise.all(
         currentList.map(async (inst) => {
           const res = await checkInstanceRealtimeStatus(inst);
@@ -85,27 +85,31 @@ export default function App() {
           const avatarChanged = liveAvatarUrl && liveAvatarUrl !== inst.avatarUrl;
 
           if (statusChanged || phoneChanged || nameChanged || avatarChanged) {
-            hasChanges = true;
+            stateNeedsUpdate = true;
             if (inst.status === 'Connected' && liveStatus === 'Disconnected') {
               showToast(`Instância "${inst.name}" foi desconectada!`, 'warning');
             } else if (inst.status === 'Disconnected' && liveStatus === 'Connected') {
               showToast(`Instância "${inst.name}" conectada com sucesso!`, 'success');
             }
-            return {
-              ...inst,
+            
+            const updates = {
               status: liveStatus,
               phoneNumber: livePhone || inst.phoneNumber,
               contactName: livePushname || inst.contactName,
               avatarUrl: liveAvatarUrl || inst.avatarUrl,
-              updatedAt: new Date().toISOString()
             };
+            
+            // Persist to Backend API silently
+            updateInstanceApi(inst.id, updates).catch(e => console.error(e));
+            
+            return { ...inst, ...updates, updatedAt: new Date().toISOString() };
           }
           return inst;
         })
       );
 
-      if (hasChanges) {
-        updateInstancesState(updatedList);
+      if (stateNeedsUpdate) {
+        setInstances(updatedList);
       }
     };
 
@@ -123,17 +127,18 @@ export default function App() {
           const res = await checkInstanceRealtimeStatus(inst);
           const liveStatus = typeof res === 'string' ? res : res?.status;
           const livePhone = typeof res === 'object' ? res?.phoneNumber : inst.phoneNumber;
-          return {
-            ...inst,
+          const updates = {
             status: liveStatus,
-            phoneNumber: livePhone || inst.phoneNumber,
-            updatedAt: new Date().toISOString()
+            phoneNumber: livePhone || inst.phoneNumber
           };
+          updateInstanceApi(inst.id, updates).catch(e => console.error(e));
+          return { ...inst, ...updates, updatedAt: new Date().toISOString() };
         })
       );
-      updateInstancesState(updatedList);
+      setInstances(updatedList);
     } else {
-      setInstances(getStoredInstances());
+      const refreshed = await fetchInstancesApi();
+      setInstances(refreshed);
     }
     setIsRefreshing(false);
     showToast('Status das instâncias sincronizados em tempo real!');
@@ -161,22 +166,33 @@ export default function App() {
   };
 
   // Callback when connected successfully
-  const handleConnectionSuccess = (updatedInstance) => {
-    const updatedList = instances.map((inst) =>
-      inst.id === updatedInstance.id ? updatedInstance : inst
-    );
-    updateInstancesState(updatedList);
-    showToast(`Instância ${updatedInstance.name} conectada com sucesso! Webhook n8n cadastrado.`);
+  const handleConnectionSuccess = async (updatedInstance) => {
+    try {
+      await updateInstanceApi(updatedInstance.id, { 
+        status: 'Connected', 
+        phoneNumber: updatedInstance.phoneNumber,
+        contactName: updatedInstance.contactName,
+        avatarUrl: updatedInstance.avatarUrl 
+      });
+      const updatedList = instances.map((inst) =>
+        inst.id === updatedInstance.id ? updatedInstance : inst
+      );
+      setInstances(updatedList);
+      showToast(`Instância ${updatedInstance.name} conectada com sucesso! Webhook n8n cadastrado.`);
+    } catch (e) {
+      showToast('Erro ao atualizar status da instância no servidor.', 'error');
+    }
   };
 
   // Disconnect handler
   const handleDisconnect = async (instance) => {
     try {
       await disconnectQuePasaInstance(instance);
+      await updateInstanceApi(instance.id, { status: 'Disconnected' });
       const updatedList = instances.map((inst) =>
         inst.id === instance.id ? { ...inst, status: 'Disconnected' } : inst
       );
-      updateInstancesState(updatedList);
+      setInstances(updatedList);
       showToast(`Instância "${instance.name}" desconectada com sucesso.`, 'warning');
     } catch (err) {
       showToast('Erro ao desconectar: ' + err.message, 'error');
@@ -184,38 +200,51 @@ export default function App() {
   };
 
   // Delete instance handler
-  const handleDeleteInstance = (id) => {
+  const handleDeleteInstance = async (id) => {
     const target = instances.find((i) => i.id === id);
     if (!target) return;
     if (window.confirm(`Tem certeza que deseja remover a caixa de conexão "${target.name}"?`)) {
-      const updatedList = instances.filter((inst) => inst.id !== id);
-      updateInstancesState(updatedList);
-      showToast(`Instância ${target.name} removida.`, 'warning');
+      try {
+        await deleteInstanceApi(id);
+        const updatedList = instances.filter((inst) => inst.id !== id);
+        setInstances(updatedList);
+        showToast(`Instância ${target.name} removida.`, 'warning');
+      } catch (err) {
+        showToast('Erro ao remover instância.', 'error');
+      }
     }
   };
 
   // Update instance token handler
-  const handleUpdateToken = (id, newToken) => {
-    const updatedList = instances.map((inst) =>
-      inst.id === id ? { ...inst, token: newToken } : inst
-    );
-    updateInstancesState(updatedList);
-    showToast(`Token da instância atualizado com sucesso!`);
+  const handleUpdateToken = async (id, newToken) => {
+    try {
+      await updateInstanceApi(id, { token: newToken });
+      const updatedList = instances.map((inst) =>
+        inst.id === id ? { ...inst, token: newToken } : inst
+      );
+      setInstances(updatedList);
+      showToast(`Token da instância atualizado com sucesso!`);
+    } catch (err) {
+      showToast('Erro ao atualizar token.', 'error');
+    }
   };
 
   // Create new instance handler
   const handleCreateInstance = async (newInstance) => {
-    const updatedList = [newInstance, ...instances];
-    updateInstancesState(updatedList);
-    setIsCreateModalOpen(false);
-    showToast(`Instância "${newInstance.name}" criada com sucesso! Token cadastrado no Webhook.`);
+    try {
+      const created = await createInstanceApi(newInstance);
+      const updatedList = [created, ...instances];
+      setInstances(updatedList);
+      setIsCreateModalOpen(false);
+      showToast(`Instância "${created.name}" criada com sucesso! Token cadastrado no Webhook.`);
 
-    // Pre-register webhook with instance token immediately on creation
-    registerQuePasaWebhook(newInstance).catch(() => null);
-
-    // Open connect modal immediately to scan QR code
-    setConnectingInstance(newInstance);
+      // Open connect modal immediately to scan QR code
+      setConnectingInstance(created);
+    } catch (err) {
+      showToast('Erro ao criar instância no banco de dados.', 'error');
+    }
   };
+
 
 
   // Test Webhook n8n Payload Sender

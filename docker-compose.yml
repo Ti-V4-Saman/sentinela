@@ -8,8 +8,8 @@ services:
     container_name: sentinella_dashboard_app
     restart: always
     ports:
-      # Port 3005 on host mapped to Nginx 80 inside container (Port 3001 is used by app-disparo-v4 on server)
-      - "3005:80"
+      # Port 3005 on host mapped to Node.js backend 3001 inside container
+      - "3005:3001"
     environment:
       - NODE_ENV=production
       - VITE_QUEPASA_SERVER_URL=https://apiwhatsapp.v4saman.com

@@ -1,5 +1,4 @@
-# Stage 1: Build Vite React application
-FROM node:20-alpine AS builder
+FROM node:20-alpine
 
 WORKDIR /app
 
@@ -12,18 +11,11 @@ RUN npm ci
 # Copy source code
 COPY . .
 
-# Build production bundle
+# Build production frontend bundle
 RUN npm run build
 
-# Stage 2: Production web server with Nginx
-FROM nginx:alpine
+EXPOSE 3001
 
-# Copy custom Nginx proxy and SPA routing config
-COPY nginx.conf /etc/nginx/conf.d/default.conf
+# Start the Node.js backend server
+CMD ["npm", "run", "server"]
 
-# Copy build artifacts from builder stage
-COPY --from=builder /app/dist /usr/share/nginx/html
-
-EXPOSE 80
-
-CMD ["nginx", "-g", "daemon off;"]

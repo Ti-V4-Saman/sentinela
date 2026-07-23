@@ -65,21 +65,63 @@ export const saveServerConfig = (serverUrl, apiKey, useMock) => {
   localStorage.setItem(STORAGE_KEYS.MOCK_MODE, useMock ? 'true' : 'false');
 };
 
-export const getStoredInstances = () => {
-  const saved = localStorage.getItem(STORAGE_KEYS.INSTANCES);
-  if (!saved) {
-    return [];
-  }
+// DB API Helpers
+const API_BASE = '/api/instances';
+
+export const fetchInstancesApi = async () => {
   try {
-    return JSON.parse(saved);
+    const res = await fetch(API_BASE);
+    if (!res.ok) throw new Error('Failed to fetch instances');
+    return await res.json();
   } catch (e) {
+    console.error('Error fetching from backend:', e);
     return [];
   }
 };
 
-export const saveInstancesToStorage = (instances) => {
-  localStorage.setItem(STORAGE_KEYS.INSTANCES, JSON.stringify(instances));
+export const createInstanceApi = async (instance) => {
+  try {
+    const res = await fetch(API_BASE, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(instance),
+    });
+    if (!res.ok) throw new Error('Failed to create instance');
+    return await res.json();
+  } catch (e) {
+    console.error('Error creating instance in DB:', e);
+    throw e;
+  }
 };
+
+export const updateInstanceApi = async (id, data) => {
+  try {
+    const res = await fetch(`${API_BASE}/${id}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    });
+    if (!res.ok) throw new Error('Failed to update instance');
+    return await res.json();
+  } catch (e) {
+    console.error('Error updating instance in DB:', e);
+    throw e;
+  }
+};
+
+export const deleteInstanceApi = async (id) => {
+  try {
+    const res = await fetch(`${API_BASE}/${id}`, {
+      method: 'DELETE',
+    });
+    if (!res.ok) throw new Error('Failed to delete instance');
+    return await res.json();
+  } catch (e) {
+    console.error('Error deleting instance in DB:', e);
+    throw e;
+  }
+};
+
 
 // Helper to extract sensitive token from endpoint URL and move it to x-quepasa-token header
 const prepareSecureRequest = (endpoint) => {
