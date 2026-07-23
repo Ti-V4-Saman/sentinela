@@ -25,7 +25,7 @@ const formatInstance = (row) => ({
 // GET all instances
 app.get('/api/instances', async (req, res) => {
   try {
-    const [rows] = await pool.query('SELECT * FROM instances ORDER BY created_at DESC');
+    const [rows] = await pool.query('SELECT * FROM sentinela_instances ORDER BY created_at DESC');
     res.json(rows.map(formatInstance));
   } catch (error) {
     console.error('Error fetching instances:', error);
@@ -42,12 +42,12 @@ app.post('/api/instances', async (req, res) => {
 
   try {
     await pool.query(
-      `INSERT INTO instances 
+      `INSERT INTO sentinela_instances 
       (id, name, token, status, phone_number, contact_name, avatar_url, webhook_url) 
       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
       [id, name, token, status || 'Disconnected', phoneNumber || null, contactName || null, avatarUrl || null, webhookUrl || null]
     );
-    const [rows] = await pool.query('SELECT * FROM instances WHERE id = ?', [id]);
+    const [rows] = await pool.query('SELECT * FROM sentinela_instances WHERE id = ?', [id]);
     res.status(201).json(formatInstance(rows[0]));
   } catch (error) {
     console.error('Error creating instance:', error);
@@ -78,7 +78,7 @@ app.put('/api/instances/:id', async (req, res) => {
     }
 
     values.push(id);
-    const query = `UPDATE instances SET ${updates.join(', ')} WHERE id = ?`;
+    const query = `UPDATE sentinela_instances SET ${updates.join(', ')} WHERE id = ?`;
     
     const [result] = await pool.query(query, values);
     
@@ -86,7 +86,7 @@ app.put('/api/instances/:id', async (req, res) => {
       return res.status(404).json({ error: 'Instance not found' });
     }
 
-    const [rows] = await pool.query('SELECT * FROM instances WHERE id = ?', [id]);
+    const [rows] = await pool.query('SELECT * FROM sentinela_instances WHERE id = ?', [id]);
     res.json(formatInstance(rows[0]));
   } catch (error) {
     console.error('Error updating instance:', error);
@@ -99,7 +99,7 @@ app.delete('/api/instances/:id', async (req, res) => {
   const { id } = req.params;
   
   try {
-    const [result] = await pool.query('DELETE FROM instances WHERE id = ?', [id]);
+    const [result] = await pool.query('DELETE FROM sentinela_instances WHERE id = ?', [id]);
     if (result.affectedRows === 0) {
       return res.status(404).json({ error: 'Instance not found' });
     }
@@ -110,6 +110,31 @@ app.delete('/api/instances/:id', async (req, res) => {
   }
 });
 
-app.listen(port, () => {
+// Auto-create table on startup to prevent manual DB errors
+const ensureTableExists = async () => {
+  try {
+    const createTableQuery = `
+      CREATE TABLE IF NOT EXISTS sentinela_instances (
+        id VARCHAR(64) PRIMARY KEY,
+        name VARCHAR(100) NOT NULL,
+        token VARCHAR(128) NOT NULL,
+        status VARCHAR(50) DEFAULT 'Disconnected',
+        phone_number VARCHAR(50),
+        contact_name VARCHAR(100),
+        avatar_url TEXT,
+        webhook_url TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+    `;
+    await pool.query(createTableQuery);
+    console.log('Database schema verified (sentinela_instances table is ready)');
+  } catch (err) {
+    console.error('Failed to verify or create sentinela_instances table on startup:', err);
+  }
+};
+
+app.listen(port, async () => {
+  await ensureTableExists();
   console.log(`Sentinela Backend API running on port ${port}`);
 });
