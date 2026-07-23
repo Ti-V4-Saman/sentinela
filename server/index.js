@@ -4,9 +4,19 @@ import pool from './db.js';
 
 const app = express();
 const port = process.env.PORT || 3001;
+const API_SECRET = process.env.API_SECRET_KEY || '';
 
 app.use(cors());
 app.use(express.json());
+
+// Auth middleware - require X-Sentinela-Key header
+app.use('/api', (req, res, next) => {
+  const key = req.headers['x-sentinela-key'];
+  if (!API_SECRET || key !== API_SECRET) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+  next();
+});
 
 // Helper to normalize instance object format from DB to Frontend expectation
 const formatInstance = (row) => ({

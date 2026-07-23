@@ -67,10 +67,15 @@ export const saveServerConfig = (serverUrl, apiKey, useMock) => {
 
 // DB API Helpers
 const API_BASE = '/api/instances';
+const API_KEY = import.meta.env.VITE_API_SECRET_KEY || '';
+const API_HEADERS = {
+  'Content-Type': 'application/json',
+  'X-Sentinela-Key': API_KEY,
+};
 
 export const fetchInstancesApi = async () => {
   try {
-    const res = await fetch(API_BASE);
+    const res = await fetch(API_BASE, { headers: API_HEADERS });
     if (!res.ok) throw new Error('Failed to fetch instances');
     return await res.json();
   } catch (e) {
@@ -83,7 +88,7 @@ export const createInstanceApi = async (instance) => {
   try {
     const res = await fetch(API_BASE, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: API_HEADERS,
       body: JSON.stringify(instance),
     });
     if (!res.ok) throw new Error('Failed to create instance');
@@ -98,7 +103,7 @@ export const updateInstanceApi = async (id, data) => {
   try {
     const res = await fetch(`${API_BASE}/${id}`, {
       method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
+      headers: API_HEADERS,
       body: JSON.stringify(data),
     });
     if (!res.ok) throw new Error('Failed to update instance');
@@ -113,6 +118,7 @@ export const deleteInstanceApi = async (id) => {
   try {
     const res = await fetch(`${API_BASE}/${id}`, {
       method: 'DELETE',
+      headers: API_HEADERS,
     });
     if (!res.ok) throw new Error('Failed to delete instance');
     return await res.json();
