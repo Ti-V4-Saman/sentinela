@@ -18,16 +18,18 @@
 - Knex é **migrations-only**. Queries de runtime continuam em `mysql2/promise` com SQL parametrizado (`?`), nunca concatenando input.
 - **Sanitização/rotação de segredos está ADIADA** para o deploy de produção (valores atuais são de teste/dev). Não é tarefa desta fase — ver seção "Pendências pré-produção".
 - Trabalhar em branch dedicada (`feat/fase1-multitenant`), nunca commitar direto na `main`.
-- **Migrations rodam primeiro no DB de teste** (container efêmero) e só depois no DB de dev compartilhado (`143.244.156.195`).
+- **Ambiente único de teste/dev:** o banco `sentinela` em `143.244.156.195` É o ambiente de teste (o mesmo que o sistema online usa). Não há container nem schema separado. Migrations são aplicadas direto nesse banco. **Não existe DB descartável**, portanto:
+  - O baseline é **idempotente** (`CREATE TABLE IF NOT EXISTS`): as 6 tabelas já existem lá, então o baseline é registrado como aplicado sem recriar nada; migrations novas rodam de verdade.
+  - **Testes automatizados são NÃO-DESTRUTIVOS**: esse banco recebe dados reais via webhook. Testes que tocam o banco rodam dentro de uma transação com `ROLLBACK` (helper `withTx`) — inserem, verificam e desfazem, sem nunca persistir. Testes de schema só leem `information_schema` após migrations aplicadas. **Nenhum teste dropa tabela ou faz `TRUNCATE`.**
 
-**Estado atual verificado (2026-07-23):** DB dev vazio (0 linhas em todas as tabelas). FKs `messages→chats/contacts/instances` e `mentions→messages` já existem. Índices `idx_chat_id/idx_contact_id/idx_timestamp/wid` em `messages` já existem. `instances` (PK `wid`) e `sentinela_instances` (PK `id`) são tabelas separadas com colunas quase idênticas. Repo não tem migration alguma; só `sentinela_instances` é auto-criada em `server/index.js`. Há drift schema↔código.
+**Estado atual verificado (2026-07-23):** DB de teste `sentinela` vazio (0 linhas em todas as tabelas). FKs `messages→chats/contacts/instances` e `mentions→messages` já existem. Índices `idx_chat_id/idx_contact_id/idx_timestamp/wid` em `messages` já existem. `instances` (PK `wid`) e `sentinela_instances` (PK `id`) são tabelas separadas com colunas quase idênticas. Repo não tem migration alguma; só `sentinela_instances` é auto-criada em `server/index.js`. Há drift schema↔código.
 
 ---
 
 ## File Structure
 
 **Novos diretórios/arquivos:**
-- `knexfile.cjs` — config Knex (dev + test), lê `.env`.
+- `knexfile.cjs` — config Knex (ambiente único `development` → banco `sentinela`), lê `.env`.
 - `migrations/` — arquivos de migration Knex (timestamped).
 - `server/db.js` — (existe) pool mysql2; permanece a fonte de conexão de runtime.
 - `server/auth/jwt.js` — assinatura/verificação de JWT.
@@ -38,8 +40,7 @@
 - `server/routes/instances.js` — CRUD de instâncias extraído de `index.js`, agora tenant-aware.
 - `server/config/cors.js` — allowlist de origens.
 - `server/index.js` — (modificar) monta middlewares, rotas, remove auto-create de tabela e a checagem `X-Sentinela-Key`.
-- `test/` — testes Vitest (`test/setup.js`, `test/schema.test.js`, `test/auth.test.js`, `test/tenantScope.test.js`, `test/instances.test.js`).
-- `docker-compose.test.yml` — MySQL 8 efêmero para testes.
+- `test/` — testes Vitest. `test/helpers/db.js` expõe `getPool()` (conecta no `sentinela` via `DB_*`), `applyMigrations()` (idempotente) e `withTx(fn)` (transação + rollback). Arquivos: `test/schema.test.js`, `test/auth.test.js`, `test/tenantScope.test.js`, `test/instances.test.js`, `test/cors.test.js`, `test/index.smoke.test.js`.
 - `vitest.config.js`.
 - `README.md` — (modificar/criar) documentar novo fluxo de auth e variáveis de ambiente.
 
@@ -59,17 +60,18 @@ Objetivo: infra de migrations + testes rodando, com o schema atual capturado com
 **Interfaces:**
 - Produces: scripts npm `migrate`, `migrate:make`, `migrate:rollback`, `test`.
 
-- [ ] **Step 1: Criar branch**
+- [ ] **Step 1: Garantir branch** (a branch `feat/fase1-multitenant` já existe; apenas confirmar que está nela)
 
 ```bash
-git -C /Users/felipesaman/Documents/GitHub/sentinela.nosync checkout -b feat/fase1-multitenant
+git -C /Users/felipesaman/Documents/GitHub/sentinela.nosync rev-parse --abbrev-ref HEAD
 ```
+Expected: `feat/fase1-multitenant`.
 
 - [ ] **Step 2: Instalar dependências**
 
 ```bash
 npm --prefix /Users/felipesaman/Documents/GitHub/sentinela.nosync install knex bcryptjs jsonwebtoken express-rate-limit
-npm --prefix /Users/felipesaman/Documents/GitHub/sentinela.nosync install -D vitest supertest cross-env
+npm --prefix /Users/felipesaman/Documents/GitHub/sentinela.nosync install -D vitest supertest
 ```
 
 - [ ] **Step 3: Adicionar scripts em `package.json`**
@@ -80,10 +82,11 @@ Em `"scripts"`, acrescentar:
 "migrate": "knex --knexfile knexfile.cjs migrate:latest",
 "migrate:rollback": "knex --knexfile knexfile.cjs migrate:rollback",
 "migrate:make": "knex --knexfile knexfile.cjs migrate:make",
-"migrate:test": "cross-env NODE_ENV=test knex --knexfile knexfile.cjs migrate:latest",
-"test": "cross-env NODE_ENV=test vitest run",
-"test:watch": "cross-env NODE_ENV=test vitest"
+"test": "vitest run",
+"test:watch": "vitest"
 ```
+
+Nota: ambiente único (`sentinela`). Sem `NODE_ENV=test` e sem `cross-env` (não precisa mais instalar `cross-env` no Step 2 — remover da linha de devDeps).
 
 - [ ] **Step 4: Verificar Knex CLI disponível**
 
@@ -97,68 +100,28 @@ git -C /Users/felipesaman/Documents/GitHub/sentinela.nosync add package.json pac
 git -C /Users/felipesaman/Documents/GitHub/sentinela.nosync commit -m "chore: add knex, auth and test tooling deps"
 ```
 
-### Task 0.2: MySQL de teste efêmero + knexfile
+### Task 0.2: knexfile (ambiente único → banco `sentinela`)
 
 **Files:**
-- Create: `docker-compose.test.yml`
 - Create: `knexfile.cjs`
 
 **Interfaces:**
-- Consumes: `.env` (DB_* de dev) e variáveis `TEST_DB_*`.
-- Produces: config Knex com ambientes `development` e `test`.
+- Consumes: `.env` (`DB_*`).
+- Produces: config Knex com um único ambiente `development` apontando para o banco `sentinela`.
 
-- [ ] **Step 1: Criar `docker-compose.test.yml`**
+- [ ] **Step 1: Garantir variáveis no `.env` local (NÃO commitar)**
 
-```yaml
-services:
-  sentinela-test-db:
-    image: mysql:8.1
-    container_name: sentinela_test_db
-    environment:
-      MYSQL_ROOT_PASSWORD: testroot
-      MYSQL_DATABASE: sentinela_test
-      MYSQL_USER: sentinela_test
-      MYSQL_PASSWORD: sentinela_test
-    ports:
-      - "3307:3306"
-    command: --default-authentication-plugin=caching_sha2_password
-    tmpfs:
-      - /var/lib/mysql
-```
+O operador já colou `JWT_SECRET`, `JWT_EXPIRES_IN`, `CORS_ORIGINS` e `SEED_SUPERADMIN_*`. As variáveis `TEST_DB_*` **não são usadas** (não há DB de teste separado) — podem ser ignoradas/removidas. As `DB_*` (banco `sentinela`) já existem no `.env`. Nada a fazer aqui além de confirmar que `DB_HOST/DB_PORT/DB_USER/DB_PASSWORD/DB_NAME` e `JWT_SECRET` estão presentes.
 
-- [ ] **Step 2: Adicionar variáveis de teste ao `.env` local (NÃO commitar)**
-
-Instrua o operador a acrescentar ao `.env` (o arquivo está no `.gitignore`; o assistente não consegue editá-lo por política de permissão — o operador cola):
-
-```dotenv
-# --- Test DB (container docker-compose.test.yml) ---
-TEST_DB_HOST=127.0.0.1
-TEST_DB_PORT=3307
-TEST_DB_USER=sentinela_test
-TEST_DB_PASSWORD=sentinela_test
-TEST_DB_NAME=sentinela_test
-# --- JWT ---
-JWT_SECRET=<gerar: openssl rand -hex 32>
-JWT_EXPIRES_IN=15m
-# --- CORS (origens do frontend, separadas por vírgula) ---
-CORS_ORIGINS=http://localhost:3000
-```
-
-- [ ] **Step 3: Criar `knexfile.cjs`**
+- [ ] **Step 2: Criar `knexfile.cjs`**
 
 ```js
 require('dotenv').config();
 
 /** @type {import('knex').Knex.Config} */
-const base = {
-  client: 'mysql2',
-  migrations: { directory: './migrations', tableName: 'knex_migrations' },
-  pool: { min: 0, max: 10 },
-};
-
 module.exports = {
   development: {
-    ...base,
+    client: 'mysql2',
     connection: {
       host: process.env.DB_HOST,
       port: Number(process.env.DB_PORT) || 3306,
@@ -166,37 +129,24 @@ module.exports = {
       password: process.env.DB_PASSWORD,
       database: process.env.DB_NAME,
     },
-  },
-  test: {
-    ...base,
-    connection: {
-      host: process.env.TEST_DB_HOST || '127.0.0.1',
-      port: Number(process.env.TEST_DB_PORT) || 3307,
-      user: process.env.TEST_DB_USER || 'sentinela_test',
-      password: process.env.TEST_DB_PASSWORD || 'sentinela_test',
-      database: process.env.TEST_DB_NAME || 'sentinela_test',
-    },
+    migrations: { directory: './migrations', tableName: 'knex_migrations' },
+    pool: { min: 0, max: 10 },
   },
 };
 ```
 
-Nota: `NODE_ENV` seleciona o ambiente. Os scripts `*:test` setam `NODE_ENV=test`. O `migrate` (dev) roda quando `NODE_ENV` não é `test`; garantir que Knex use o ambiente certo passando `--env`:
-Ajustar script `migrate` para `knex --knexfile knexfile.cjs --env development migrate:latest` e `migrate:test` para `--env test`.
+Nota: Knex usa o ambiente `development` por padrão quando `NODE_ENV` não está setado. Os scripts npm não setam `NODE_ENV`, então caem em `development` → banco `sentinela`.
 
-- [ ] **Step 4: Subir o DB de teste e validar conexão**
+- [ ] **Step 3: Validar conexão do Knex**
 
-```bash
-docker compose -f /Users/felipesaman/Documents/GitHub/sentinela.nosync/docker-compose.test.yml up -d
-sleep 15
-docker exec sentinela_test_db mysqladmin ping -uroot -ptestroot
-```
-Expected: `mysqld is alive`.
+Run: `npx --prefix /Users/felipesaman/Documents/GitHub/sentinela.nosync knex --knexfile knexfile.cjs migrate:currentVersion`
+Expected: imprime `Current Version: none` (ou a versão atual) sem erro de conexão.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 4: Commit**
 
 ```bash
-git -C /Users/felipesaman/Documents/GitHub/sentinela.nosync add docker-compose.test.yml knexfile.cjs
-git -C /Users/felipesaman/Documents/GitHub/sentinela.nosync commit -m "chore: add ephemeral test MySQL and knexfile"
+git -C /Users/felipesaman/Documents/GitHub/sentinela.nosync add knexfile.cjs
+git -C /Users/felipesaman/Documents/GitHub/sentinela.nosync commit -m "chore: add knexfile targeting sentinela database"
 ```
 
 ### Task 0.3: Vitest + helper de conexão de teste
@@ -206,7 +156,7 @@ git -C /Users/felipesaman/Documents/GitHub/sentinela.nosync commit -m "chore: ad
 - Create: `test/helpers/db.js`
 
 **Interfaces:**
-- Produces: `getTestPool()` → pool mysql2 conectado ao DB de teste; `resetSchema()` → dropa e recria o schema de teste (via migrations).
+- Produces: `getPool()` → pool mysql2 conectado ao banco `sentinela` (via `DB_*`); `applyMigrations()` → roda `migrate:latest` (idempotente, não destrói dados); `withTx(fn)` → abre conexão + `BEGIN`, chama `fn(conn)`, sempre faz `ROLLBACK` (nada persiste). Testes que precisam de banco passam `conn` onde um `pool` é esperado (mysql2 `connection` também tem `.query`).
 
 - [ ] **Step 1: Criar `vitest.config.js`**
 
@@ -217,7 +167,7 @@ export default defineConfig({
   test: {
     environment: 'node',
     include: ['test/**/*.test.js'],
-    fileParallelism: false, // testes compartilham o mesmo DB de teste
+    fileParallelism: false, // testes compartilham o mesmo banco (sentinela)
     hookTimeout: 30000,
     testTimeout: 30000,
   },
@@ -227,30 +177,53 @@ export default defineConfig({
 - [ ] **Step 2: Criar `test/helpers/db.js`**
 
 ```js
+import 'dotenv/config';
 import mysql from 'mysql2/promise';
 import knexFactory from 'knex';
 import config from '../../knexfile.cjs';
 
-export function getTestPool() {
-  return mysql.createPool({
-    host: process.env.TEST_DB_HOST || '127.0.0.1',
-    port: Number(process.env.TEST_DB_PORT) || 3307,
-    user: process.env.TEST_DB_USER || 'sentinela_test',
-    password: process.env.TEST_DB_PASSWORD || 'sentinela_test',
-    database: process.env.TEST_DB_NAME || 'sentinela_test',
-    waitForConnections: true,
-    connectionLimit: 5,
-  });
+let _pool;
+export function getPool() {
+  if (!_pool) {
+    _pool = mysql.createPool({
+      host: process.env.DB_HOST,
+      port: Number(process.env.DB_PORT) || 3306,
+      user: process.env.DB_USER,
+      password: process.env.DB_PASSWORD,
+      database: process.env.DB_NAME,
+      waitForConnections: true,
+      connectionLimit: 5,
+    });
+  }
+  return _pool;
 }
 
-// Recria o schema do zero rodando rollback total + migrate:latest.
-export async function resetSchema() {
-  const knex = knexFactory(config.test);
+// Aplica migrations (idempotente). NÃO destrói dados: só cria o que falta.
+export async function applyMigrations() {
+  const knex = knexFactory(config.development);
   try {
-    await knex.migrate.rollback(undefined, true); // all
     await knex.migrate.latest();
   } finally {
     await knex.destroy();
+  }
+}
+
+// Executa fn dentro de uma transação e SEMPRE faz rollback (nada persiste).
+// fn recebe uma connection mysql2 (que expõe .query, como um pool).
+export async function withTx(fn) {
+  const conn = await mysql.createConnection({
+    host: process.env.DB_HOST,
+    port: Number(process.env.DB_PORT) || 3306,
+    user: process.env.DB_USER,
+    password: process.env.DB_PASSWORD,
+    database: process.env.DB_NAME,
+  });
+  await conn.beginTransaction();
+  try {
+    return await fn(conn);
+  } finally {
+    try { await conn.rollback(); } catch { /* noop */ }
+    await conn.end();
   }
 }
 ```
@@ -261,15 +234,24 @@ Criar `test/harness.test.js`:
 
 ```js
 import { describe, it, expect, afterAll } from 'vitest';
-import { getTestPool } from './helpers/db.js';
+import { getPool, withTx } from './helpers/db.js';
 
-const pool = getTestPool();
-afterAll(() => pool.end());
+afterAll(() => getPool().end());
 
 describe('test harness', () => {
-  it('conecta no DB de teste', async () => {
-    const [rows] = await pool.query('SELECT DATABASE() AS db');
-    expect(rows[0].db).toBe(process.env.TEST_DB_NAME || 'sentinela_test');
+  it('conecta no banco sentinela', async () => {
+    const [rows] = await getPool().query('SELECT DATABASE() AS db');
+    expect(rows[0].db).toBe(process.env.DB_NAME);
+  });
+  it('withTx desfaz inserts (rollback)', async () => {
+    // Cria uma tabela temporária de sessão só para provar o rollback sem tocar tabelas reais.
+    await withTx(async (conn) => {
+      await conn.query('CREATE TEMPORARY TABLE _tx_probe (n INT)');
+      await conn.query('INSERT INTO _tx_probe VALUES (1)');
+      const [r] = await conn.query('SELECT COUNT(*) c FROM _tx_probe');
+      expect(r[0].c).toBe(1);
+    });
+    expect(true).toBe(true); // rollback ocorreu sem erro
   });
 });
 ```
@@ -277,18 +259,18 @@ describe('test harness', () => {
 - [ ] **Step 4: Rodar**
 
 Run: `npm --prefix /Users/felipesaman/Documents/GitHub/sentinela.nosync test`
-Expected: PASS (1 teste).
+Expected: PASS (2 testes).
 
 - [ ] **Step 5: Commit**
 
 ```bash
 git -C /Users/felipesaman/Documents/GitHub/sentinela.nosync add vitest.config.js test/
-git -C /Users/felipesaman/Documents/GitHub/sentinela.nosync commit -m "test: add vitest harness against ephemeral test DB"
+git -C /Users/felipesaman/Documents/GitHub/sentinela.nosync commit -m "test: add vitest harness (sentinela DB, non-destructive withTx)"
 ```
 
-### Task 0.4: Migration baseline (schema atual real)
+### Task 0.4: Migration baseline (schema atual real, idempotente)
 
-Captura o schema **exatamente como está hoje no DB dev** (reverse-engineered), para que `migrate:latest` num DB vazio reproduza o estado atual antes das mudanças da Fase 1. Reversível.
+Captura o schema **exatamente como está hoje no banco `sentinela`** (reverse-engineered). Como as 6 tabelas JÁ existem nesse banco, o baseline usa `CREATE TABLE IF NOT EXISTS`: em `sentinela` é registrado como aplicado sem recriar nada; num banco vazio (futuro ambiente novo) cria tudo. Reversível.
 
 **Files:**
 - Create: `migrations/<ts>_baseline.cjs`
@@ -303,10 +285,10 @@ Captura o schema **exatamente como está hoje no DB dev** (reverse-engineered), 
 
 ```js
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { getTestPool, resetSchema } from './helpers/db.js';
+import { getPool, applyMigrations } from './helpers/db.js';
 
-const pool = getTestPool();
-beforeAll(async () => { await resetSchema(); });
+const pool = getPool();
+beforeAll(async () => { await applyMigrations(); });
 afterAll(() => pool.end());
 
 async function columns(table) {
@@ -334,10 +316,10 @@ describe('baseline schema', () => {
 });
 ```
 
-- [ ] **Step 2: Rodar para ver falhar**
+- [ ] **Step 2: Rodar o teste (contexto)**
 
 Run: `npm --prefix /Users/felipesaman/Documents/GitHub/sentinela.nosync test -- test/schema.test.js`
-Expected: FAIL (migration inexistente / tabelas ausentes).
+Expected: **PASSA já** — as 6 tabelas pré-existem no banco `sentinela`, então o teste de existência é verdadeiro antes mesmo do baseline. Aqui o baseline NÃO é TDD-fail-first (o schema já existe); seu papel é **registrar o schema no `knex_migrations`** para reproduzir em ambientes novos. O `schema.test.js` continua sendo a rede de proteção das mudanças seguintes. Se o comando falhar por conexão/`applyMigrations`, corrigir antes de seguir.
 
 - [ ] **Step 3: Gerar e escrever a migration baseline**
 
@@ -345,12 +327,12 @@ Expected: FAIL (migration inexistente / tabelas ausentes).
 npm --prefix /Users/felipesaman/Documents/GitHub/sentinela.nosync run migrate:make -- baseline
 ```
 
-Conteúdo do arquivo gerado em `migrations/<ts>_baseline.cjs` (usar `knex.raw` para reproduzir o DDL exato observado):
+Conteúdo do arquivo gerado em `migrations/<ts>_baseline.cjs`. Usa `CREATE TABLE IF NOT EXISTS` (idempotente: no-op no `sentinela`, cria em ambiente vazio):
 
 ```js
 exports.up = async function (knex) {
   await knex.raw(`
-    CREATE TABLE chats (
+    CREATE TABLE IF NOT EXISTS chats (
       id varchar(50) NOT NULL,
       title varchar(255) DEFAULT NULL,
       is_group tinyint(1) DEFAULT NULL,
@@ -359,7 +341,7 @@ exports.up = async function (knex) {
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci`);
 
   await knex.raw(`
-    CREATE TABLE contacts (
+    CREATE TABLE IF NOT EXISTS contacts (
       id varchar(50) NOT NULL,
       phone varchar(20) DEFAULT NULL,
       name varchar(255) DEFAULT NULL,
@@ -368,7 +350,7 @@ exports.up = async function (knex) {
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci`);
 
   await knex.raw(`
-    CREATE TABLE instances (
+    CREATE TABLE IF NOT EXISTS instances (
       wid varchar(50) NOT NULL,
       created_at timestamp NULL DEFAULT CURRENT_TIMESTAMP,
       id varchar(64) DEFAULT NULL,
@@ -384,7 +366,7 @@ exports.up = async function (knex) {
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci`);
 
   await knex.raw(`
-    CREATE TABLE sentinela_instances (
+    CREATE TABLE IF NOT EXISTS sentinela_instances (
       id varchar(64) NOT NULL,
       name varchar(100) NOT NULL,
       token varchar(128) NOT NULL,
@@ -399,7 +381,7 @@ exports.up = async function (knex) {
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci`);
 
   await knex.raw(`
-    CREATE TABLE messages (
+    CREATE TABLE IF NOT EXISTS messages (
       id varchar(50) NOT NULL,
       chat_id varchar(50) DEFAULT NULL,
       contact_id varchar(50) DEFAULT NULL,
@@ -420,7 +402,7 @@ exports.up = async function (knex) {
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci`);
 
   await knex.raw(`
-    CREATE TABLE mentions (
+    CREATE TABLE IF NOT EXISTS mentions (
       id bigint unsigned NOT NULL AUTO_INCREMENT,
       message_id varchar(50) DEFAULT NULL,
       phone varchar(20) DEFAULT NULL,
@@ -431,6 +413,8 @@ exports.up = async function (knex) {
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci`);
 };
 
+// ⚠️ ATENÇÃO: rodar o `down` do baseline no banco `sentinela` DROPA as tabelas reais.
+// Só é seguro em ambiente novo/vazio. applyMigrations()/npm run migrate NUNCA fazem rollback.
 exports.down = async function (knex) {
   await knex.raw('DROP TABLE IF EXISTS mentions');
   await knex.raw('DROP TABLE IF EXISTS messages');
@@ -441,16 +425,20 @@ exports.down = async function (knex) {
 };
 ```
 
-- [ ] **Step 4: Rodar teste (passa)**
+- [ ] **Step 4: Registrar o baseline e rodar o teste**
 
-Run: `npm --prefix /Users/felipesaman/Documents/GitHub/sentinela.nosync test -- test/schema.test.js`
-Expected: PASS.
+```bash
+npm --prefix /Users/felipesaman/Documents/GitHub/sentinela.nosync run migrate
+npm --prefix /Users/felipesaman/Documents/GitHub/sentinela.nosync test -- test/schema.test.js
+```
+Expected: `migrate` aplica o baseline sem erro (no-op nas tabelas existentes, grava 1 linha em `knex_migrations`); teste PASS. Confirmar:
+`npx knex --knexfile knexfile.cjs migrate:currentVersion` → mostra a versão do baseline.
 
 - [ ] **Step 5: Commit**
 
 ```bash
 git -C /Users/felipesaman/Documents/GitHub/sentinela.nosync add migrations/ test/schema.test.js
-git -C /Users/felipesaman/Documents/GitHub/sentinela.nosync commit -m "feat(db): baseline migration reproducing current schema"
+git -C /Users/felipesaman/Documents/GitHub/sentinela.nosync commit -m "feat(db): idempotent baseline migration reproducing current schema"
 ```
 
 ---
@@ -819,14 +807,14 @@ exports.down = async (knex) => {
 };
 ```
 
-- [ ] **Step 4: Rodar (passa)** e validar rollback:
+- [ ] **Step 4: Rodar (passa)**
 
 ```bash
 npm --prefix /Users/felipesaman/Documents/GitHub/sentinela.nosync run test -- test/schema.test.js
-npm --prefix /Users/felipesaman/Documents/GitHub/sentinela.nosync run migrate:test -- --env test
-cross-env NODE_ENV=test npx --prefix /Users/felipesaman/Documents/GitHub/sentinela.nosync knex --knexfile knexfile.cjs --env test migrate:rollback
 ```
-Expected: teste PASS; rollback sem erro.
+Expected: teste PASS (a migration foi aplicada ao `sentinela` via `applyMigrations()` no beforeAll; PKs compostas e FKs compostas presentes).
+
+Nota: **NÃO** validar reversibilidade rodando `migrate:rollback` no `sentinela` — o `down` desta migration recria o estado anterior mas mexe em tabelas reais. O `down` está escrito e é reversível; validar só em ambiente vazio, se necessário.
 
 - [ ] **Step 5: Commit** — `git commit -m "feat(db): tenant-scoped composite PKs and FKs on data tables"`.
 
@@ -1058,47 +1046,58 @@ Coração da segurança: dado `req.auth`, devolve a cláusula SQL + args para re
 
 ```js
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { getTestPool, resetSchema } from './helpers/db.js';
+import { getPool, applyMigrations, withTx } from './helpers/db.js';
 import { tenantFilter, visibleInstanceIds } from '../server/middleware/tenantScope.js';
 
-const pool = getTestPool();
-beforeAll(async () => {
-  await resetSchema();
-  // Seed: 2 tenants, instâncias, equipes, vínculos
-  await pool.query("INSERT INTO tenants (id, name) VALUES (1,'T1'),(2,'T2')");
-  await pool.query(`INSERT INTO sentinela_instances (id, tenant_id, name, token) VALUES
-    ('i1',1,'A','t1'),('i2',1,'B','t2'),('i3',2,'C','t3')`);
-  await pool.query(`INSERT INTO users (id, tenant_id, name, email, password_hash, role) VALUES
-    (10,1,'Gestor1','g1@t1','x','gestor'),(11,1,'User1','u1@t1','x','usuario')`);
-  await pool.query("INSERT INTO teams (id, tenant_id, name) VALUES (100,1,'Eq1')");
-  await pool.query("INSERT INTO team_managers (team_id, user_id) VALUES (100,10)");
-  await pool.query("INSERT INTO team_instances (team_id, instance_id) VALUES (100,'i1')");
-  await pool.query("INSERT INTO user_instances (user_id, instance_id) VALUES (11,'i2')");
-});
-afterAll(() => pool.end());
+// Seeda dados de teste com IDs sentinela altos (não colidem com dados reais)
+// DENTRO da transação recebida; tudo é desfeito no rollback do withTx.
+async function seed(conn) {
+  await conn.query("INSERT INTO tenants (id, name) VALUES (900001,'T1'),(900002,'T2')");
+  await conn.query(`INSERT INTO sentinela_instances (id, tenant_id, name, token) VALUES
+    ('__t_i1__',900001,'A','t1'),('__t_i2__',900001,'B','t2'),('__t_i3__',900002,'C','t3')`);
+  await conn.query(`INSERT INTO users (id, tenant_id, name, email, password_hash, role) VALUES
+    (900010,900001,'Gestor1','g1@__test__','x','gestor'),
+    (900011,900001,'User1','u1@__test__','x','usuario')`);
+  await conn.query("INSERT INTO teams (id, tenant_id, name) VALUES (900100,900001,'Eq1')");
+  await conn.query("INSERT INTO team_managers (team_id, user_id) VALUES (900100,900010)");
+  await conn.query("INSERT INTO team_instances (team_id, instance_id) VALUES (900100,'__t_i1__')");
+  await conn.query("INSERT INTO user_instances (user_id, instance_id) VALUES (900011,'__t_i2__')");
+}
 
-describe('tenantFilter', () => {
+beforeAll(async () => { await applyMigrations(); });
+afterAll(() => getPool().end());
+
+describe('tenantFilter (função pura)', () => {
   it('superadmin sem restrição', () => {
     expect(tenantFilter({ role: 'superadmin', tenantId: null }).sql).toBe('');
   });
   it('admin restringe por tenant', () => {
-    const f = tenantFilter({ role: 'admin', tenantId: 1 }, 'm.');
+    const f = tenantFilter({ role: 'admin', tenantId: 900001 }, 'm.');
     expect(f.sql).toBe('m.tenant_id = ?');
-    expect(f.params).toEqual([1]);
+    expect(f.params).toEqual([900001]);
   });
 });
 
-describe('visibleInstanceIds', () => {
+describe('visibleInstanceIds (banco, em transação com rollback)', () => {
   it('admin vê ALL', async () => {
-    expect(await visibleInstanceIds(pool, { role: 'admin', tenantId: 1 })).toBe('ALL');
+    await withTx(async (conn) => {
+      await seed(conn);
+      expect(await visibleInstanceIds(conn, { role: 'admin', tenantId: 900001 })).toBe('ALL');
+    });
   });
   it('gestor vê instâncias das suas equipes', async () => {
-    const ids = await visibleInstanceIds(pool, { role: 'gestor', tenantId: 1, userId: 10 });
-    expect(ids).toEqual(['i1']);
+    await withTx(async (conn) => {
+      await seed(conn);
+      const ids = await visibleInstanceIds(conn, { role: 'gestor', tenantId: 900001, userId: 900010 });
+      expect(ids).toEqual(['__t_i1__']);
+    });
   });
   it('usuario vê só as próprias instâncias', async () => {
-    const ids = await visibleInstanceIds(pool, { role: 'usuario', tenantId: 1, userId: 11 });
-    expect(ids).toEqual(['i2']);
+    await withTx(async (conn) => {
+      await seed(conn);
+      const ids = await visibleInstanceIds(conn, { role: 'usuario', tenantId: 900001, userId: 900011 });
+      expect(ids).toEqual(['__t_i2__']);
+    });
   });
 });
 ```
@@ -1173,36 +1172,49 @@ Adicionar em `test/auth.test.js`:
 ```js
 import express from 'express';
 import request from 'supertest';
-import { getTestPool, resetSchema } from './helpers/db.js';
+import { applyMigrations, withTx } from './helpers/db.js';
 import { hashPassword } from '../server/auth/password.js';
 import { createAuthRouter } from '../server/routes/auth.js';
 
-describe('POST /api/auth/login', () => {
-  let app, pool;
-  beforeAll(async () => {
-    process.env.JWT_SECRET = process.env.JWT_SECRET || 'test-secret';
-    await resetSchema();
-    pool = getTestPool();
-    await pool.query("INSERT INTO tenants (id, name) VALUES (1,'T1')");
-    const hash = await hashPassword('senha123');
-    await pool.query(
-      "INSERT INTO users (tenant_id, name, email, password_hash, role) VALUES (1,'Admin','a@t1',?, 'admin')",
-      [hash]);
-    app = express();
-    app.use(express.json());
-    app.use('/api/auth', createAuthRouter(pool));
-  });
-  afterAll(() => pool.end());
+// Monta um app cujo router usa a connection transacional `conn`.
+function appWith(conn) {
+  const app = express();
+  app.use(express.json());
+  app.use('/api/auth', createAuthRouter(conn));
+  return app;
+}
 
+beforeAll(async () => {
+  process.env.JWT_SECRET = process.env.JWT_SECRET || 'test-secret';
+  await applyMigrations();
+});
+
+describe('POST /api/auth/login (em transação com rollback)', () => {
   it('loga com credencial válida', async () => {
-    const res = await request(app).post('/api/auth/login').send({ email: 'a@t1', password: 'senha123' });
-    expect(res.status).toBe(200);
-    expect(res.body.token).toBeTruthy();
-    expect(res.body.user.role).toBe('admin');
+    await withTx(async (conn) => {
+      await conn.query("INSERT INTO tenants (id, name) VALUES (900001,'T1')");
+      const hash = await hashPassword('senha123');
+      await conn.query(
+        "INSERT INTO users (tenant_id, name, email, password_hash, role) VALUES (900001,'Admin','a@__test__',?, 'admin')",
+        [hash]);
+      const res = await request(appWith(conn)).post('/api/auth/login')
+        .send({ email: 'a@__test__', password: 'senha123' });
+      expect(res.status).toBe(200);
+      expect(res.body.token).toBeTruthy();
+      expect(res.body.user.role).toBe('admin');
+    });
   });
   it('401 com senha errada', async () => {
-    const res = await request(app).post('/api/auth/login').send({ email: 'a@t1', password: 'errada' });
-    expect(res.status).toBe(401);
+    await withTx(async (conn) => {
+      await conn.query("INSERT INTO tenants (id, name) VALUES (900001,'T1')");
+      const hash = await hashPassword('senha123');
+      await conn.query(
+        "INSERT INTO users (tenant_id, name, email, password_hash, role) VALUES (900001,'Admin','a@__test__',?, 'admin')",
+        [hash]);
+      const res = await request(appWith(conn)).post('/api/auth/login')
+        .send({ email: 'a@__test__', password: 'errada' });
+      expect(res.status).toBe(401);
+    });
   });
 });
 ```
@@ -1346,49 +1358,59 @@ Reescreve as rotas hoje inline em `index.js` para: exigir `authenticate`, filtra
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import express from 'express';
 import request from 'supertest';
-import { getTestPool, resetSchema } from './helpers/db.js';
+import { getPool, applyMigrations, withTx } from './helpers/db.js';
 import { signToken } from '../server/auth/jwt.js';
 import { authenticate } from '../server/middleware/authenticate.js';
 import { createInstancesRouter } from '../server/routes/instances.js';
 
-function makeApp(pool) {
+// App cujo router usa a connection transacional `conn`.
+function makeApp(conn) {
   const a = express();
   a.use(express.json());
-  a.use('/api/instances', authenticate, createInstancesRouter(pool));
+  a.use('/api/instances', authenticate, createInstancesRouter(conn));
   return a;
 }
 function bearer(p) { return `Bearer ${signToken(p)}`; }
 
-describe('GET /api/instances (isolamento)', () => {
-  let app, pool;
-  beforeAll(async () => {
-    process.env.JWT_SECRET = process.env.JWT_SECRET || 'test-secret';
-    await resetSchema();
-    pool = getTestPool();
-    await pool.query("INSERT INTO tenants (id,name) VALUES (1,'T1'),(2,'T2')");
-    await pool.query(`INSERT INTO sentinela_instances (id,tenant_id,name,token) VALUES
-      ('i1',1,'A','t1'),('i2',1,'B','t2'),('i3',2,'C','t3')`);
-    await pool.query(`INSERT INTO users (id,tenant_id,name,email,password_hash,role) VALUES
-      (11,1,'U','u@t1','x','usuario')`);
-    await pool.query("INSERT INTO user_instances (user_id,instance_id) VALUES (11,'i2')");
-    app = makeApp(pool);
-  });
-  afterAll(() => pool.end());
+// Seed com IDs sentinela altos, dentro da transação.
+async function seed(conn) {
+  await conn.query("INSERT INTO tenants (id,name) VALUES (900001,'T1'),(900002,'T2')");
+  await conn.query(`INSERT INTO sentinela_instances (id,tenant_id,name,token) VALUES
+    ('__t_i1__',900001,'A','t1'),('__t_i2__',900001,'B','t2'),('__t_i3__',900002,'C','t3')`);
+  await conn.query(`INSERT INTO users (id,tenant_id,name,email,password_hash,role) VALUES
+    (900011,900001,'U','u@__test__','x','usuario')`);
+  await conn.query("INSERT INTO user_instances (user_id,instance_id) VALUES (900011,'__t_i2__')");
+}
 
-  it('admin do tenant 1 vê só i1,i2', async () => {
-    const res = await request(app).get('/api/instances')
-      .set('Authorization', bearer({ userId: 1, tenantId: 1, role: 'admin' }));
-    expect(res.status).toBe(200);
-    expect(res.body.map(i => i.id).sort()).toEqual(['i1','i2']);
+beforeAll(async () => {
+  process.env.JWT_SECRET = process.env.JWT_SECRET || 'test-secret';
+  await applyMigrations();
+});
+afterAll(() => getPool().end());
+
+describe('GET /api/instances (isolamento, em transação com rollback)', () => {
+  it('admin do tenant 900001 vê só as duas instâncias dele', async () => {
+    await withTx(async (conn) => {
+      await seed(conn);
+      const res = await request(makeApp(conn)).get('/api/instances')
+        .set('Authorization', bearer({ userId: 900050, tenantId: 900001, role: 'admin' }));
+      expect(res.status).toBe(200);
+      expect(res.body.map(i => i.id).sort()).toEqual(['__t_i1__','__t_i2__']);
+    });
   });
-  it('usuario 11 vê só i2', async () => {
-    const res = await request(app).get('/api/instances')
-      .set('Authorization', bearer({ userId: 11, tenantId: 1, role: 'usuario' }));
-    expect(res.body.map(i => i.id)).toEqual(['i2']);
+  it('usuario 900011 vê só a própria instância', async () => {
+    await withTx(async (conn) => {
+      await seed(conn);
+      const res = await request(makeApp(conn)).get('/api/instances')
+        .set('Authorization', bearer({ userId: 900011, tenantId: 900001, role: 'usuario' }));
+      expect(res.body.map(i => i.id)).toEqual(['__t_i2__']);
+    });
   });
   it('sem token → 401', async () => {
-    const res = await request(app).get('/api/instances');
-    expect(res.status).toBe(401);
+    await withTx(async (conn) => {
+      const res = await request(makeApp(conn)).get('/api/instances');
+      expect(res.status).toBe(401);
+    });
   });
 });
 ```
@@ -1543,19 +1565,18 @@ Remove a checagem `X-Sentinela-Key` e o `ensureTableExists` (schema agora é res
 ```js
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import request from 'supertest';
-import { getTestPool, resetSchema } from './helpers/db.js';
+import { getPool, applyMigrations } from './helpers/db.js';
 import { createApp } from '../server/index.js';
 
 describe('app wiring', () => {
-  let app, pool;
+  let app;
   beforeAll(async () => {
     process.env.JWT_SECRET = process.env.JWT_SECRET || 'test-secret';
     process.env.CORS_ORIGINS = 'http://localhost:3000';
-    await resetSchema();
-    pool = getTestPool();
-    app = createApp(pool);
+    await applyMigrations();
+    app = createApp(getPool());
   });
-  afterAll(() => pool.end());
+  afterAll(() => getPool().end());
 
   it('login é público, instances exige auth', async () => {
     const login = await request(app).post('/api/auth/login').send({ email: 'x', password: 'y' });
@@ -1681,13 +1702,40 @@ Expected: nenhum resultado.
 Cria o primeiro superadmin e o tenant existente (V4Company). Idempotente. Senha vem de env `SEED_SUPERADMIN_PASSWORD` (não hardcode).
 
 **Files:**
-- Create: `migrations/<ts>_seed_bootstrap.cjs` (ou script `scripts/seed.mjs`)
+- Create: `scripts/seed.mjs` (script standalone, NÃO é migration — não roda em `applyMigrations`)
 - Test: `test/seed.test.js`
 
 **Interfaces:**
 - Produces: 1 tenant `V4Company`; 1 user role=superadmin (tenant_id NULL) com senha vinda de env.
 
-- [ ] **Step 1: Teste (falha)** — após rodar o seed, existe ≥1 superadmin e o tenant V4Company.
+- [ ] **Step 1: Teste (falha)** — valida a lógica do seed dentro de uma transação com rollback (não persiste):
+
+`test/seed.test.js`:
+
+```js
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { getPool, applyMigrations, withTx } from './helpers/db.js';
+import { hashPassword } from '../server/auth/password.js';
+
+beforeAll(async () => { await applyMigrations(); });
+afterAll(() => getPool().end());
+
+describe('seed bootstrap (em transação com rollback)', () => {
+  it('cria tenant e superadmin', async () => {
+    await withTx(async (conn) => {
+      await conn.query("INSERT IGNORE INTO tenants (name) VALUES ('__TEST_V4Company__')");
+      const hash = await hashPassword('x');
+      await conn.query(
+        `INSERT INTO users (tenant_id, name, email, password_hash, role, status)
+         VALUES (NULL, 'Superadmin', 'sa@__test__', ?, 'superadmin', 'active')`, [hash]);
+      const [t] = await conn.query("SELECT COUNT(*) c FROM tenants WHERE name='__TEST_V4Company__'");
+      const [u] = await conn.query("SELECT COUNT(*) c FROM users WHERE role='superadmin' AND email='sa@__test__'");
+      expect(t[0].c).toBe(1);
+      expect(u[0].c).toBe(1);
+    });
+  });
+});
+```
 
 - [ ] **Step 2: Rodar (falha)**.
 
@@ -1720,50 +1768,43 @@ await pool.end();
 
 Adicionar script npm: `"seed": "node scripts/seed.mjs"`.
 
-- [ ] **Step 4: Rodar teste (passa)** — o teste chama o mesmo INSERT lógico contra o DB de teste.
+- [ ] **Step 4: Rodar teste (passa)** — `npm test -- test/seed.test.js`.
 
 - [ ] **Step 5: Commit** — `git commit -m "feat(db): bootstrap seed for superadmin and V4Company tenant"`.
 
-### Task 4.2: Rodar toda a suíte + aplicar migrations no DB de teste
+### Task 4.2: Rodar toda a suíte
 
 - [ ] **Step 1: Suíte completa**
 
 Run: `npm --prefix /Users/felipesaman/Documents/GitHub/sentinela.nosync test`
 Expected: TODOS os testes PASS.
 
-- [ ] **Step 2: Ciclo migrate up/down completo no DB de teste**
+- [ ] **Step 2: Confirmar migrations aplicadas no `sentinela`**
 
-```bash
-cross-env NODE_ENV=test npx --prefix /Users/felipesaman/Documents/GitHub/sentinela.nosync knex --knexfile knexfile.cjs --env test migrate:latest
-cross-env NODE_ENV=test npx --prefix /Users/felipesaman/Documents/GitHub/sentinela.nosync knex --knexfile knexfile.cjs --env test migrate:rollback --all
-cross-env NODE_ENV=test npx --prefix /Users/felipesaman/Documents/GitHub/sentinela.nosync knex --knexfile knexfile.cjs --env test migrate:latest
-```
-Expected: sobe e desce sem erro (reversibilidade validada).
+Run: `npx --prefix /Users/felipesaman/Documents/GitHub/sentinela.nosync knex --knexfile knexfile.cjs migrate:currentVersion` e `migrate:list`
+Expected: todas as migrations listadas como `Completed`. (As migrations já foram aplicadas ao `sentinela` durante os testes via `applyMigrations()`; este passo só confirma.)
 
-### Task 4.3: Aplicar no DB de dev compartilhado (com checagem de órfãos)
+Nota sobre reversibilidade: cada migration tem `down` e foi projetada reversível. **NÃO** rodar `migrate:rollback --all` no `sentinela` — dropa dados/tabelas reais. A reversibilidade individual pode ser validada num ambiente vazio, se necessário; não é feita no banco vivo.
 
-⚠️ Ponto de checkpoint humano antes de rodar contra `143.244.156.195`.
+### Task 4.3: Verificação final do schema no `sentinela` + seed do superadmin
 
-- [ ] **Step 1: Checagem de órfãos (defensiva, mesmo com DB vazio)** — rodar o script de checagem (já validado: 0 órfãos hoje). Se qualquer contagem > 0, PARAR e reportar.
+As migrations já foram aplicadas ao `sentinela` (durante os testes). Este é o checkpoint de confirmação e seed.
 
-- [ ] **Step 2: Backup lógico do schema atual**
+⚠️ Checkpoint humano: confirmar com o operador antes do seed (grava dados reais).
+
+- [ ] **Step 1: Verificação pós-migration** — rodar o script de inspeção de schema (`node scripts/inspect.mjs` ou o script de checagem usado no levantamento) e confirmar: tabelas `tenants/users/teams/team_managers/team_instances/user_instances` presentes; PKs compostas em `chats/contacts/messages`; `tenant_id` em `messages/mentions/instances/sentinela_instances`; FKs compostas `fk_msg_chat/fk_msg_contact/fk_mentions_msg`; índices `idx_contacts_tenant_phone/idx_chats_tenant_title`.
+
+- [ ] **Step 2: Backup lógico do schema (defensivo)**
 
 ```bash
 mysqldump -h 143.244.156.195 -P 3306 -u user_sentinela -p --no-data sentinela > /tmp/sentinela_schema_backup_$(date +%s).sql
 ```
 (Operador digita a senha; não passar `-p<senha>` inline.)
 
-- [ ] **Step 3: Rodar migrations no dev**
-
-Run: `npm --prefix /Users/felipesaman/Documents/GitHub/sentinela.nosync run migrate`
-Expected: todas as migrations aplicadas; `knex_migrations` populada.
-
-- [ ] **Step 4: Verificação pós-migration** — rodar o script de inspeção de schema e confirmar PKs compostas + novas tabelas + FKs.
-
-- [ ] **Step 5: Seed do superadmin no dev**
+- [ ] **Step 3: Seed do superadmin (após confirmação humana; usar senha real em `SEED_SUPERADMIN_PASSWORD`)**
 
 Run: `npm --prefix /Users/felipesaman/Documents/GitHub/sentinela.nosync run seed`
-Expected: `Seed OK`.
+Expected: `Seed OK`. Confirmar: `SELECT id,email,role FROM users WHERE role='superadmin'` retorna o registro.
 
 ### Task 4.4: Documentação (`README.md`) e `.env.example` (novas variáveis, sem segredos)
 
@@ -1776,7 +1817,7 @@ Nota: os valores REAIS de QuePasa/n8n ficam como estão (pendência pré-produç
 **Interfaces:**
 - Produces: README com fluxo de login JWT, tabela de variáveis de ambiente, comandos de migration/seed/test.
 
-- [ ] **Step 1: Escrever `README.md`** com seções: Visão geral (read-only), Stack, Setup local, Variáveis de ambiente (DB_*, TEST_DB_*, JWT_SECRET, JWT_EXPIRES_IN, CORS_ORIGINS, SEED_SUPERADMIN_*), Migrations (`npm run migrate`, `migrate:rollback`, `migrate:make`), Testes (`npm test` + docker-compose.test.yml), Fluxo de autenticação (login → JWT → Bearer), RBAC (4 papéis e escopo), Modelo multi-tenant (tenant_id denormalizado, PKs compostas).
+- [ ] **Step 1: Escrever `README.md`** com seções: Visão geral (read-only), Stack, Setup local, Variáveis de ambiente (DB_*, JWT_SECRET, JWT_EXPIRES_IN, CORS_ORIGINS, SEED_SUPERADMIN_*), Migrations (`npm run migrate`, `migrate:rollback`, `migrate:make` — com aviso de não rodar rollback no banco vivo), Testes (`npm test` — rodam contra o banco `sentinela` em transações com rollback, não-destrutivos), Fluxo de autenticação (login → JWT → Bearer), RBAC (4 papéis e escopo), Modelo multi-tenant (tenant_id denormalizado, PKs compostas).
 
 - [ ] **Step 2: Instruir operador a acrescentar ao `.env.example`** (placeholders):
 
@@ -1788,12 +1829,6 @@ CORS_ORIGINS=http://localhost:3000
 # --- Seed inicial ---
 SEED_SUPERADMIN_EMAIL=admin@example.com
 SEED_SUPERADMIN_PASSWORD=defina-uma-senha-forte
-# --- Test DB ---
-TEST_DB_HOST=127.0.0.1
-TEST_DB_PORT=3307
-TEST_DB_USER=sentinela_test
-TEST_DB_PASSWORD=sentinela_test
-TEST_DB_NAME=sentinela_test
 ```
 
 - [ ] **Step 3: Commit** — `git commit -m "docs: JWT auth flow, env vars, migrations and RBAC model"`.
