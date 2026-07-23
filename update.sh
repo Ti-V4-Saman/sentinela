@@ -5,6 +5,7 @@ echo "   ATUALIZADOR DO SENTINELA"
 echo "==========================================="
 echo ""
 echo "[1/3] Puxando atualizações do GitHub..."
+git stash 2>/dev/null || true
 git pull origin main
 
 echo ""
