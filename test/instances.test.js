@@ -16,12 +16,16 @@ function makeApp(conn) {
 function bearer(p) { return `Bearer ${signToken(p)}`; }
 
 // Seed com IDs sentinela altos, dentro da transação.
+// Usuários atuantes precisam existir e estar 'active' (rotas de mutação recarregam do banco).
 async function seed(conn) {
   await conn.query("INSERT INTO tenants (id,name) VALUES (900001,'T1'),(900002,'T2')");
   await conn.query(`INSERT INTO sentinela_instances (id,tenant_id,name,token) VALUES
     ('__t_i1__',900001,'A','t1'),('__t_i2__',900001,'B','t2'),('__t_i3__',900002,'C','t3')`);
   await conn.query(`INSERT INTO users (id,tenant_id,name,email,password_hash,role) VALUES
-    (900011,900001,'U','u@__test__','x','usuario')`);
+    (900011,900001,'U','u@__test__','x','usuario'),
+    (900010,900001,'G','g@__test__','x','gestor'),
+    (900050,900001,'A1','a1@__test__','x','admin'),
+    (900060,900002,'A2','a2@__test__','x','admin')`);
   await conn.query("INSERT INTO user_instances (user_id,instance_id) VALUES (900011,'__t_i2__')");
 }
 
@@ -41,12 +45,21 @@ describe('GET /api/instances (isolamento, em transação com rollback)', () => {
       expect(res.body.map(i => i.id).sort()).toEqual(['__t_i1__', '__t_i2__']);
     });
   });
-  it('usuario 900011 vê só a própria instância', async () => {
+  it('usuario 900011 vê só a própria instância, sem o token (redigido)', async () => {
     await withTx(async (conn) => {
       await seed(conn);
       const res = await request(makeApp(conn)).get('/api/instances')
         .set('Authorization', bearer({ userId: 900011, tenantId: 900001, role: 'usuario' }));
       expect(res.body.map(i => i.id)).toEqual(['__t_i2__']);
+      expect(res.body[0]).not.toHaveProperty('token');
+    });
+  });
+  it('admin recebe o token da instância (não redigido)', async () => {
+    await withTx(async (conn) => {
+      await seed(conn);
+      const res = await request(makeApp(conn)).get('/api/instances')
+        .set('Authorization', bearer({ userId: 900050, tenantId: 900001, role: 'admin' }));
+      expect(res.body[0]).toHaveProperty('token');
     });
   });
   it('admin do tenant 900002 não vê instâncias do tenant 900001', async () => {
@@ -93,12 +106,37 @@ describe('mutações exigem admin/superadmin', () => {
       expect(res.body.name).toBe('Renomeada');
     });
   });
-  it('admin não pode PUT instância de outro tenant (403)', async () => {
+  it('admin recebe 404 (não 403) ao PUT instância de outro tenant — sem oráculo de existência', async () => {
     await withTx(async (conn) => {
       await seed(conn);
-      const res = await request(makeApp(conn)).put('/api/instances/__t_i3__')
+      const cross = await request(makeApp(conn)).put('/api/instances/__t_i3__')
         .set('Authorization', bearer({ userId: 900050, tenantId: 900001, role: 'admin' }))
         .send({ name: 'cross-tenant' });
+      const missing = await request(makeApp(conn)).put('/api/instances/__does_not_exist__')
+        .set('Authorization', bearer({ userId: 900050, tenantId: 900001, role: 'admin' }))
+        .send({ name: 'x' });
+      // Existência em outro tenant e inexistência devem ser indistinguíveis.
+      expect(cross.status).toBe(404);
+      expect(missing.status).toBe(404);
+    });
+  });
+  it('admin desativado (status disabled) não pode mutar — 401', async () => {
+    await withTx(async (conn) => {
+      await seed(conn);
+      await conn.query("UPDATE users SET status='disabled' WHERE id=900050");
+      const res = await request(makeApp(conn)).put('/api/instances/__t_i1__')
+        .set('Authorization', bearer({ userId: 900050, tenantId: 900001, role: 'admin' }))
+        .send({ name: 'x' });
+      expect(res.status).toBe(401);
+    });
+  });
+  it('usuario com token forjado de admin não consegue mutar (papel recarregado do banco) — 403', async () => {
+    await withTx(async (conn) => {
+      await seed(conn);
+      // Token afirma role=admin, mas no banco 900011 é usuario → deve ser barrado.
+      const res = await request(makeApp(conn)).put('/api/instances/__t_i2__')
+        .set('Authorization', bearer({ userId: 900011, tenantId: 900001, role: 'admin' }))
+        .send({ name: 'x' });
       expect(res.status).toBe(403);
     });
   });

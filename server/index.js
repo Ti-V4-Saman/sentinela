@@ -8,6 +8,9 @@ import { createInstancesRouter } from './routes/instances.js';
 
 export function createApp(dbPool = pool) {
   const app = express();
+  // Atrás do nginx/Traefik: confia em 1 hop de proxy para que req.ip seja o IP
+  // real do cliente (rate limiting por IP correto).
+  app.set('trust proxy', 1);
   app.use(corsMiddleware);
   app.use(express.json());
 

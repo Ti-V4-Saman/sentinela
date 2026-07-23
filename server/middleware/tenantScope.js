@@ -29,12 +29,3 @@ export async function visibleInstanceIds(pool, auth) {
     [auth.userId, auth.tenantId]);
   return rows.map(r => r.instance_id);
 }
-
-export function assertTenantMatch(auth, resourceTenantId) {
-  if (auth.role === 'superadmin') return;
-  if (Number(auth.tenantId) !== Number(resourceTenantId)) {
-    const err = new Error('Acesso negado a outro tenant');
-    err.statusCode = 403;
-    throw err;
-  }
-}

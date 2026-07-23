@@ -74,6 +74,17 @@ apenas leem `information_schema` após as migrations serem aplicadas (`applyMigr
 
 Não há mais chave estática `X-Sentinela-Key` / `VITE_API_SECRET_KEY` — foram removidas.
 
+**Janela de revogação do JWT:** role/tenant ficam no token e valem por `JWT_EXPIRES_IN`
+(15m). Para não deixar um admin rebaixado/desativado manter poder de escrita nessa janela,
+as rotas de **mutação** (`POST/PUT/DELETE /api/instances`) **recarregam `role`/`status` do
+banco** a cada requisição (usuário `disabled` → 401; papel rebaixado → 403). As rotas de
+leitura aceitam a janela de 15m como período de revogação. Uma denylist/versão de token por
+requisição fica como melhoria futura.
+
+Instância acessada por outro tenant retorna **404** (não 403), para não revelar a existência
+de IDs de outros tenants. O `token` da instância (credencial QuePasa) só é retornado a
+admin/superadmin — gestor/usuario (read-only) não o recebem.
+
 ## RBAC (4 papéis)
 
 | Papel | Escopo |
