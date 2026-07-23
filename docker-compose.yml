@@ -14,3 +14,5 @@ services:
       - NODE_ENV=production
       - VITE_QUEPASA_SERVER_URL=https://apiwhatsapp.v4saman.com
       - VITE_QUEPASA_USER=ti.bh@v4company.com
+    env_file:
+      - .env
