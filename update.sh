@@ -8,12 +8,15 @@ echo "[1/3] Puxando atualizações do GitHub..."
 git pull origin main
 
 echo ""
-echo "[2/3] Instalando dependências e compilando o Frontend..."
-npm install
-npm run build
+echo "[2/3] Compilando o Frontend via Docker..."
+docker run --rm \
+  -v "$(pwd)":/app \
+  -w /app \
+  node:20-alpine \
+  sh -c "npm install && npm run build"
 
 echo ""
-echo "[3/3] Copiando o Frontend compilado para o Nginx e (re)iniciando o Backend..."
+echo "[3/3] Copiando Frontend para o Nginx e (re)iniciando o Backend..."
 cp -r dist/. /home/sentinela/dist/
 docker rm -f sentinella_dashboard_app 2>/dev/null || true
 docker-compose up -d --build
