@@ -67,8 +67,12 @@ export function createInstancesRouter(pool) {
     }
   });
 
-  // PUT (dentro do tenant; valida propriedade)
+  // PUT (admin/superadmin só; dentro do tenant). Gestão de instância é papel do admin;
+  // gestor/usuario são read-only e não podem modificar instâncias.
   router.put('/:id', async (req, res) => {
+    if (!['admin', 'superadmin'].includes(req.auth.role)) {
+      return res.status(403).json({ error: 'Sem permissão para alterar instância' });
+    }
     const { id } = req.params;
     try {
       const [owned] = await pool.query('SELECT tenant_id FROM sentinela_instances WHERE id = ?', [id]);

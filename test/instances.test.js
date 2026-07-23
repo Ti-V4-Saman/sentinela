@@ -64,3 +64,42 @@ describe('GET /api/instances (isolamento, em transação com rollback)', () => {
     });
   });
 });
+
+describe('mutações exigem admin/superadmin', () => {
+  it('usuario não pode PUT instância (403)', async () => {
+    await withTx(async (conn) => {
+      await seed(conn);
+      const res = await request(makeApp(conn)).put('/api/instances/__t_i2__')
+        .set('Authorization', bearer({ userId: 900011, tenantId: 900001, role: 'usuario' }))
+        .send({ name: 'hack' });
+      expect(res.status).toBe(403);
+    });
+  });
+  it('gestor não pode DELETE instância (403)', async () => {
+    await withTx(async (conn) => {
+      await seed(conn);
+      const res = await request(makeApp(conn)).delete('/api/instances/__t_i1__')
+        .set('Authorization', bearer({ userId: 900010, tenantId: 900001, role: 'gestor' }));
+      expect(res.status).toBe(403);
+    });
+  });
+  it('admin pode PUT dentro do tenant (200)', async () => {
+    await withTx(async (conn) => {
+      await seed(conn);
+      const res = await request(makeApp(conn)).put('/api/instances/__t_i1__')
+        .set('Authorization', bearer({ userId: 900050, tenantId: 900001, role: 'admin' }))
+        .send({ name: 'Renomeada' });
+      expect(res.status).toBe(200);
+      expect(res.body.name).toBe('Renomeada');
+    });
+  });
+  it('admin não pode PUT instância de outro tenant (403)', async () => {
+    await withTx(async (conn) => {
+      await seed(conn);
+      const res = await request(makeApp(conn)).put('/api/instances/__t_i3__')
+        .set('Authorization', bearer({ userId: 900050, tenantId: 900001, role: 'admin' }))
+        .send({ name: 'cross-tenant' });
+      expect(res.status).toBe(403);
+    });
+  });
+});
