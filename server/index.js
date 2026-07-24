@@ -7,6 +7,7 @@ import { createAuthRouter } from './routes/auth.js';
 import { createInstancesRouter } from './routes/instances.js';
 import { createTenantsRouter } from './routes/tenants.js';
 import { createUsersRouter } from './routes/users.js';
+import { createTeamsRouter } from './routes/teams.js';
 
 export function createApp(dbPool = pool) {
   const app = express();
@@ -23,6 +24,7 @@ export function createApp(dbPool = pool) {
   app.use('/api/instances', authenticate, createInstancesRouter(dbPool));
   app.use('/api/tenants', authenticate, createTenantsRouter(dbPool));
   app.use('/api/users', authenticate, createUsersRouter(dbPool));
+  app.use('/api/teams', authenticate, createTeamsRouter(dbPool));
 
   return app;
 }
