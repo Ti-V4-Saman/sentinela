@@ -1,6 +1,6 @@
 // QuePasa WhatsApp Service & Webhook Integration Layer
 
-import { getAuthHeaders } from './authApi';
+import { getAuthHeaders, handleUnauthorized } from './authApi';
 
 export const MANDATORY_WEBHOOK_URL = 'https://n8.v4saman.com/webhook/sentinela-whatsapp-v4';
 
@@ -73,6 +73,7 @@ const API_BASE = '/api/instances';
 export const fetchInstancesApi = async () => {
   try {
     const res = await fetch(API_BASE, { headers: getAuthHeaders() });
+    if (res.status === 401) { handleUnauthorized(); return []; }
     if (!res.ok) throw new Error('Failed to fetch instances');
     return await res.json();
   } catch (e) {
@@ -88,6 +89,7 @@ export const createInstanceApi = async (instance) => {
       headers: getAuthHeaders(),
       body: JSON.stringify(instance),
     });
+    if (res.status === 401) { handleUnauthorized(); throw new Error('Unauthorized'); }
     if (!res.ok) throw new Error('Failed to create instance');
     return await res.json();
   } catch (e) {
@@ -103,6 +105,7 @@ export const updateInstanceApi = async (id, data) => {
       headers: getAuthHeaders(),
       body: JSON.stringify(data),
     });
+    if (res.status === 401) { handleUnauthorized(); throw new Error('Unauthorized'); }
     if (!res.ok) throw new Error('Failed to update instance');
     return await res.json();
   } catch (e) {
@@ -117,6 +120,7 @@ export const deleteInstanceApi = async (id) => {
       method: 'DELETE',
       headers: getAuthHeaders(),
     });
+    if (res.status === 401) { handleUnauthorized(); throw new Error('Unauthorized'); }
     if (!res.ok) throw new Error('Failed to delete instance');
     return await res.json();
   } catch (e) {

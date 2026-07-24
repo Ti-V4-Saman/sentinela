@@ -13,12 +13,13 @@ import {
 } from 'lucide-react';
 
 
-export default function InstanceCard({ 
-  instance, 
-  onConnect, 
-  onDisconnect, 
+export default function InstanceCard({
+  instance,
+  onConnect,
+  onDisconnect,
   onDelete,
-  onUpdateToken
+  onUpdateToken,
+  isAdmin = false
 }) {
   const [showToken, setShowToken] = useState(false);
   const [copied, setCopied] = useState(false);
@@ -57,17 +58,20 @@ export default function InstanceCard({
           <h3 className="font-outfit font-bold text-base text-white tracking-wider uppercase truncate">
             {instance.name}
           </h3>
-          <button 
-            title="Editar Token da Instância"
-            onClick={() => setIsEditingToken(!isEditingToken)}
-            className={`p-1 rounded-md transition-colors shrink-0 ${isEditingToken ? 'text-brand-emerald bg-dark-hover' : 'text-slate-400 hover:text-white hover:bg-dark-hover'}`}
-          >
-            <Settings className="w-4 h-4" />
-          </button>
+          {/* Editar token — só admin/superadmin (gestor/usuario não recebem o token) */}
+          {isAdmin && (
+            <button
+              title="Editar Token da Instância"
+              onClick={() => setIsEditingToken(!isEditingToken)}
+              className={`p-1 rounded-md transition-colors shrink-0 ${isEditingToken ? 'text-brand-emerald bg-dark-hover' : 'text-slate-400 hover:text-white hover:bg-dark-hover'}`}
+            >
+              <Settings className="w-4 h-4" />
+            </button>
+          )}
         </div>
 
-        {/* Edit Token Form or Masked Token Container */}
-        {isEditingToken ? (
+        {/* Bloco de token — só admin/superadmin. gestor/usuario não recebem instance.token. */}
+        {!isAdmin ? null : isEditingToken ? (
           <div className="bg-dark-input border border-brand-emerald/50 rounded-lg p-2 mb-4 space-y-2 animate-in fade-in duration-150">
             <label className="block text-[10px] uppercase font-mono text-slate-400">Token do QuePasa:</label>
             <input 
@@ -162,7 +166,7 @@ export default function InstanceCard({
               <span className="w-2 h-2 rounded-full bg-brand-emerald animate-pulse" />
               Connected
             </span>
-          ) : (
+          ) : isAdmin ? (
             <button
               onClick={() => onConnect(instance)}
               className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold bg-rose-950/80 hover:bg-rose-900 text-rose-300 border border-rose-800 transition-colors"
@@ -170,12 +174,18 @@ export default function InstanceCard({
               <XCircle className="w-3.5 h-3.5" />
               Disconnected
             </button>
+          ) : (
+            <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold bg-rose-950/80 text-rose-300 border border-rose-800">
+              <XCircle className="w-3.5 h-3.5" />
+              Disconnected
+            </span>
           )}
         </div>
 
-        {/* Right Side: Primary Actions */}
+        {/* Ações de gestão — só admin/superadmin. gestor/usuario são read-only. */}
+        {isAdmin && (
         <div className="flex items-center gap-1.5 flex-wrap">
-          
+
           {/* If Disconnected: Connect / QR Code button */}
           {!isConnected && (
             <button
@@ -211,6 +221,7 @@ export default function InstanceCard({
           </button>
 
         </div>
+        )}
 
       </div>
 

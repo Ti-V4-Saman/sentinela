@@ -15,6 +15,7 @@ import {
   purgeFakeInstances,
   MANDATORY_WEBHOOK_URL
 } from './services/quepasaApi';
+import { getUser, isAdmin as isAdminRole, logout } from './services/authApi';
 import {
   ShieldCheck,
   CheckCircle2,
@@ -27,6 +28,10 @@ import {
 } from 'lucide-react';
 
 export default function App() {
+  const currentUser = getUser();
+  const admin = isAdminRole();
+  const handleLogout = () => { logout(); window.location.reload(); };
+
   const [instances, setInstances] = useState([]);
   const [serverConfig, setServerConfig] = useState({ serverUrl: '', apiKey: '', useMock: true });
   const [searchQuery, setSearchQuery] = useState('');
@@ -307,6 +312,9 @@ export default function App() {
         onOpenCreateModal={() => setIsCreateModalOpen(true)}
         onOpenServerConfig={() => setIsServerModalOpen(true)}
         serverConfig={serverConfig}
+        isAdmin={admin}
+        user={currentUser}
+        onLogout={handleLogout}
       />
 
       {/* Toast Notification Banner */}
@@ -372,6 +380,7 @@ export default function App() {
                 onDisconnect={handleDisconnect}
                 onDelete={handleDeleteInstance}
                 onUpdateToken={handleUpdateToken}
+                isAdmin={admin}
               />
 
             ))}
@@ -395,14 +404,14 @@ export default function App() {
               >
                 Limpar Filtros
               </button>
-            ) : (
+            ) : admin ? (
               <button
                 onClick={() => setIsCreateModalOpen(true)}
                 className="px-5 py-2.5 text-xs font-semibold bg-brand-emerald hover:bg-brand-emeraldDark text-black rounded-lg transition-all shadow-md shadow-brand-emerald/20"
               >
                 Instance +
               </button>
-            )}
+            ) : null}
           </div>
         )}
 
