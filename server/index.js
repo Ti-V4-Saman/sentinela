@@ -6,6 +6,7 @@ import { authenticate } from './middleware/authenticate.js';
 import { createAuthRouter } from './routes/auth.js';
 import { createInstancesRouter } from './routes/instances.js';
 import { createTenantsRouter } from './routes/tenants.js';
+import { createUsersRouter } from './routes/users.js';
 
 export function createApp(dbPool = pool) {
   const app = express();
@@ -21,6 +22,7 @@ export function createApp(dbPool = pool) {
   // Rotas protegidas (JWT + tenant scope)
   app.use('/api/instances', authenticate, createInstancesRouter(dbPool));
   app.use('/api/tenants', authenticate, createTenantsRouter(dbPool));
+  app.use('/api/users', authenticate, createUsersRouter(dbPool));
 
   return app;
 }
