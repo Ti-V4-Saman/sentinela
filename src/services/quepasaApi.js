@@ -1,5 +1,7 @@
 // QuePasa WhatsApp Service & Webhook Integration Layer
 
+import { getAuthHeaders, handleUnauthorized } from './authApi';
+
 export const MANDATORY_WEBHOOK_URL = 'https://n8.v4saman.com/webhook/sentinela-whatsapp-v4';
 
 const STORAGE_KEYS = {
@@ -67,15 +69,11 @@ export const saveServerConfig = (serverUrl, apiKey, useMock) => {
 
 // DB API Helpers
 const API_BASE = '/api/instances';
-const API_KEY = import.meta.env.VITE_API_SECRET_KEY || '';
-const API_HEADERS = {
-  'Content-Type': 'application/json',
-  'X-Sentinela-Key': API_KEY,
-};
 
 export const fetchInstancesApi = async () => {
   try {
-    const res = await fetch(API_BASE, { headers: API_HEADERS });
+    const res = await fetch(API_BASE, { headers: getAuthHeaders() });
+    if (res.status === 401) { handleUnauthorized(); return []; }
     if (!res.ok) throw new Error('Failed to fetch instances');
     return await res.json();
   } catch (e) {
@@ -88,9 +86,10 @@ export const createInstanceApi = async (instance) => {
   try {
     const res = await fetch(API_BASE, {
       method: 'POST',
-      headers: API_HEADERS,
+      headers: getAuthHeaders(),
       body: JSON.stringify(instance),
     });
+    if (res.status === 401) { handleUnauthorized(); throw new Error('Unauthorized'); }
     if (!res.ok) throw new Error('Failed to create instance');
     return await res.json();
   } catch (e) {
@@ -103,9 +102,10 @@ export const updateInstanceApi = async (id, data) => {
   try {
     const res = await fetch(`${API_BASE}/${id}`, {
       method: 'PUT',
-      headers: API_HEADERS,
+      headers: getAuthHeaders(),
       body: JSON.stringify(data),
     });
+    if (res.status === 401) { handleUnauthorized(); throw new Error('Unauthorized'); }
     if (!res.ok) throw new Error('Failed to update instance');
     return await res.json();
   } catch (e) {
@@ -118,8 +118,9 @@ export const deleteInstanceApi = async (id) => {
   try {
     const res = await fetch(`${API_BASE}/${id}`, {
       method: 'DELETE',
-      headers: API_HEADERS,
+      headers: getAuthHeaders(),
     });
+    if (res.status === 401) { handleUnauthorized(); throw new Error('Unauthorized'); }
     if (!res.ok) throw new Error('Failed to delete instance');
     return await res.json();
   } catch (e) {
@@ -161,8 +162,10 @@ const makeApiRequest = async (endpoint, options = {}) => {
   const { serverUrl, apiKey } = getStoredServerConfig();
   const { cleanEndpoint, extractedToken } = prepareSecureRequest(endpoint);
 
-  const directUrl = `${serverUrl.replace(/\/$/, '')}${endpoint}`;
-  // Use cleanEndpoint so token parameter is omitted from browser Network tab and added server-side by proxy
+  // Sempre cleanEndpoint (sem ?token=) — o token vai no header x-quepasa-token e é
+  // injetado server-side pelo proxy. Nunca aparece em URL do browser (nem no fallback direto),
+  // evitando vazamento em logs/Network tab.
+  const directUrl = `${serverUrl.replace(/\/$/, '')}${cleanEndpoint}`;
   const proxyUrl = `/quepasa-proxy${cleanEndpoint}`;
 
   const headers = {
@@ -216,7 +219,8 @@ const makeApiBlobRequest = async (endpoint, options = {}) => {
   const { serverUrl, apiKey } = getStoredServerConfig();
   const { cleanEndpoint, extractedToken } = prepareSecureRequest(endpoint);
 
-  const directUrl = `${serverUrl.replace(/\/$/, '')}${endpoint}`;
+  // cleanEndpoint (sem ?token=) também no fallback direto — token só no header x-quepasa-token.
+  const directUrl = `${serverUrl.replace(/\/$/, '')}${cleanEndpoint}`;
   const proxyUrl = `/quepasa-proxy${cleanEndpoint}`;
 
   const headers = {
