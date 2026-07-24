@@ -162,8 +162,10 @@ const makeApiRequest = async (endpoint, options = {}) => {
   const { serverUrl, apiKey } = getStoredServerConfig();
   const { cleanEndpoint, extractedToken } = prepareSecureRequest(endpoint);
 
-  const directUrl = `${serverUrl.replace(/\/$/, '')}${endpoint}`;
-  // Use cleanEndpoint so token parameter is omitted from browser Network tab and added server-side by proxy
+  // Sempre cleanEndpoint (sem ?token=) — o token vai no header x-quepasa-token e é
+  // injetado server-side pelo proxy. Nunca aparece em URL do browser (nem no fallback direto),
+  // evitando vazamento em logs/Network tab.
+  const directUrl = `${serverUrl.replace(/\/$/, '')}${cleanEndpoint}`;
   const proxyUrl = `/quepasa-proxy${cleanEndpoint}`;
 
   const headers = {
@@ -217,7 +219,8 @@ const makeApiBlobRequest = async (endpoint, options = {}) => {
   const { serverUrl, apiKey } = getStoredServerConfig();
   const { cleanEndpoint, extractedToken } = prepareSecureRequest(endpoint);
 
-  const directUrl = `${serverUrl.replace(/\/$/, '')}${endpoint}`;
+  // cleanEndpoint (sem ?token=) também no fallback direto — token só no header x-quepasa-token.
+  const directUrl = `${serverUrl.replace(/\/$/, '')}${cleanEndpoint}`;
   const proxyUrl = `/quepasa-proxy${cleanEndpoint}`;
 
   const headers = {
