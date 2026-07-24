@@ -97,29 +97,40 @@ export default function InstanceCard({
             </div>
           </div>
         ) : (
-          <div className="bg-dark-input border border-dark-border rounded-lg px-3 py-2 flex items-center justify-between gap-2 mb-4">
-            <div className="flex items-center gap-2 min-w-0">
-              <Lock className="w-3.5 h-3.5 text-slate-500 shrink-0" />
-              <span className="font-mono text-xs text-slate-300 truncate select-none">
-                {showToken ? `${instance.token.slice(0, 8)}-****-****-****-${instance.token.slice(-4)}` : '••••••••-••••-••••-••••-••••••••••••'}
-              </span>
+          <div className="bg-dark-input border border-dark-border rounded-lg px-3 py-2 flex flex-col gap-1.5 mb-4">
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2 min-w-0">
+                <Lock className="w-3.5 h-3.5 text-slate-500 shrink-0" />
+                <span className="font-mono text-xs text-slate-300 truncate select-none">
+                  {showToken ? `${instance.token.slice(0, 8)}-****-****-****-${instance.token.slice(-4)}` : '••••••••-••••-••••-••••-••••••••••••'}
+                </span>
+              </div>
+              <div className="flex items-center gap-1.5 shrink-0 text-slate-400">
+                <button
+                  onClick={handleCopyToken}
+                  title={copied ? "Copiado!" : "Copiar Token"}
+                  className="hover:text-brand-emerald p-1 rounded transition-colors"
+                >
+                  {copied ? <Check className="w-3.5 h-3.5 text-brand-emerald" /> : <Copy className="w-3.5 h-3.5" />}
+                </button>
+                <button
+                  onClick={() => setShowToken(!showToken)}
+                  title={showToken ? "Ocultar Token" : "Visualizar Token (Requer Login)"}
+                  className="hover:text-white p-1 rounded transition-colors"
+                >
+                  {showToken ? <EyeOff className="w-3.5 h-3.5 text-brand-emerald" /> : <Eye className="w-3.5 h-3.5" />}
+                </button>
+              </div>
             </div>
-            <div className="flex items-center gap-1.5 shrink-0 text-slate-400">
-              <button 
-                onClick={handleCopyToken}
-                title={copied ? "Copiado!" : "Copiar Token"}
-                className="hover:text-brand-emerald p-1 rounded transition-colors"
-              >
-                {copied ? <Check className="w-3.5 h-3.5 text-brand-emerald" /> : <Copy className="w-3.5 h-3.5" />}
-              </button>
-              <button 
-                onClick={() => setShowToken(!showToken)}
-                title={showToken ? "Ocultar Token" : "Visualizar Token (Requer Login)"}
-                className="hover:text-white p-1 rounded transition-colors"
-              >
-                {showToken ? <EyeOff className="w-3.5 h-3.5 text-brand-emerald" /> : <Eye className="w-3.5 h-3.5" />}
-              </button>
-            </div>
+            {/* Badge do Tenant ID (reintroduzido do commit e17dfe7 do @GiovaniMaia) */}
+            {instance.tenantId && (
+              <div className="flex items-center justify-between text-[11px] font-mono text-slate-400 pt-1.5 border-t border-dark-border/50">
+                <span>Tenant ID:</span>
+                <span className="text-brand-emerald font-semibold bg-brand-emerald/10 border border-brand-emerald/30 px-1.5 py-0.5 rounded text-[10px]">
+                  #{instance.tenantId}
+                </span>
+              </div>
+            )}
           </div>
         )}
 
