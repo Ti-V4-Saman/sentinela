@@ -1,5 +1,6 @@
 import express from 'express';
 import { tenantFilter, visibleInstanceIds } from '../middleware/tenantScope.js';
+import { loadActor, isAdmin } from '../middleware/actor.js';
 
 // includeToken controla exposição do token QuePasa (credencial sensível):
 // só admin/superadmin recebem; gestor/usuario (read-only) não.
@@ -16,17 +17,6 @@ const formatInstance = (row, { includeToken = false } = {}) => ({
   createdAt: row.created_at,
   updatedAt: row.updated_at,
 });
-
-// Recarrega o usuário atuante do banco em operações de mutação, para que
-// role/status/tenant sejam a verdade atual e não o que estava no JWT (que vive
-// até 15m). Fecha a janela de admin rebaixado/desativado nas rotas perigosas.
-async function loadActor(pool, userId) {
-  const [rows] = await pool.query(
-    'SELECT id, role, status, tenant_id FROM users WHERE id = ?', [userId]);
-  return rows[0] || null;
-}
-
-const isAdmin = (role) => role === 'admin' || role === 'superadmin';
 
 export function createInstancesRouter(pool) {
   const router = express.Router();
