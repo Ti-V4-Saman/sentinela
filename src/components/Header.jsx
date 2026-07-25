@@ -1,6 +1,7 @@
 import React from 'react';
 import { Search, Plus, RotateCw, ShieldCheck, SlidersHorizontal } from 'lucide-react';
 import UserMenu from './UserMenu';
+import { homeView } from '../utils/nav';
 
 export default function Header({
   searchQuery,
@@ -21,12 +22,13 @@ export default function Header({
     <header className="sticky top-0 z-30 bg-dark-bg/95 backdrop-blur border-b border-dark-border px-4 lg:px-8">
       {/* Linha 1: logo (volta para instâncias) + menu do usuário */}
       <div className="max-w-7xl mx-auto flex items-center justify-between gap-4 py-3">
-        <button onClick={() => setActiveView?.('instances')} className="flex items-center gap-2.5 shrink-0 group">
-          <div className="w-9 h-9 rounded-xl bg-gradient-to-tr from-brand-emeraldDark to-brand-emerald flex items-center justify-center text-black font-bold shadow-lg shadow-brand-emerald/20">
+        <button onClick={() => setActiveView?.(homeView(user?.role))} title="Ir para o início"
+          className="flex items-center gap-2.5 shrink-0 group cursor-pointer">
+          <div className="w-9 h-9 rounded-xl bg-gradient-to-tr from-brand-emeraldDark to-brand-emerald flex items-center justify-center text-black font-bold shadow-lg shadow-brand-emerald/20 group-hover:scale-105 transition-transform">
             <ShieldCheck className="w-5 h-5 text-black" />
           </div>
           <div className="text-left">
-            <h1 className="text-lg font-bold font-outfit text-white tracking-wide leading-none">Sentinela</h1>
+            <h1 className="text-lg font-bold font-outfit text-white tracking-wide leading-none group-hover:text-brand-emerald transition-colors">Sentinela</h1>
             <p className="text-[10px] text-slate-400 hidden sm:block">Monitoramento WhatsApp</p>
           </div>
         </button>

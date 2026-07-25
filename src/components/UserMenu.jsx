@@ -4,8 +4,13 @@ import { Settings, Building2, Users, UsersRound, LogOut, ChevronDown } from 'luc
 const ROLE_LABELS = { superadmin: 'Superadmin', admin: 'Administrador', gestor: 'Gestor', usuario: 'Usuário' };
 
 // Itens de navegação por papel (terminologia visível: "Clientes").
+// Superadmin tem acesso irrestrito: vê Clientes, Usuários e Equipes.
 const NAV_BY_ROLE = {
-  superadmin: [{ key: 'tenants', label: 'Clientes', icon: Building2 }],
+  superadmin: [
+    { key: 'tenants', label: 'Clientes', icon: Building2 },
+    { key: 'users', label: 'Usuários', icon: Users },
+    { key: 'teams', label: 'Equipes', icon: UsersRound },
+  ],
   admin: [
     { key: 'users', label: 'Usuários', icon: Users },
     { key: 'teams', label: 'Equipes', icon: UsersRound },
