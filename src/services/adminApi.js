@@ -34,9 +34,12 @@ export const listTeams = (tenantId) => req(`/api/teams${tenantId ? `?tenantId=${
 export const createTeam = (body) => req('/api/teams', { method: 'POST', body: JSON.stringify(body) });
 export const updateTeam = (id, body) => req(`/api/teams/${id}`, { method: 'PUT', body: JSON.stringify(body) });
 export const deleteTeam = (id) => req(`/api/teams/${id}`, { method: 'DELETE' });
+// Números da equipe: DERIVADOS dos usuários-membros (read-only).
 export const listTeamInstances = (id) => req(`/api/teams/${id}/instances`);
-export const linkTeamInstance = (id, instanceId) => req(`/api/teams/${id}/instances`, { method: 'POST', body: JSON.stringify({ instanceId }) });
-export const unlinkTeamInstance = (id, instanceId) => req(`/api/teams/${id}/instances/${instanceId}`, { method: 'DELETE' });
+// Membros (usuários) da equipe — vínculo que deriva os números.
+export const listTeamUsers = (id) => req(`/api/teams/${id}/users`);
+export const linkTeamUser = (id, userId) => req(`/api/teams/${id}/users`, { method: 'POST', body: JSON.stringify({ userId }) });
+export const unlinkTeamUser = (id, userId) => req(`/api/teams/${id}/users/${userId}`, { method: 'DELETE' });
 export const listTeamManagers = (id) => req(`/api/teams/${id}/managers`);
 export const linkTeamManager = (id, userId) => req(`/api/teams/${id}/managers`, { method: 'POST', body: JSON.stringify({ userId }) });
 export const unlinkTeamManager = (id, userId) => req(`/api/teams/${id}/managers/${userId}`, { method: 'DELETE' });

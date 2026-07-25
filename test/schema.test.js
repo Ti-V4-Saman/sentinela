@@ -111,6 +111,27 @@ describe('tenant-scoped data tables', () => {
   });
 });
 
+describe('dono de instância + membros de equipe (Fase 3)', () => {
+  it('sentinela_instances tem owner_user_id NOT NULL com FK para users', async () => {
+    const [cols] = await pool.query(
+      `SELECT IS_NULLABLE FROM information_schema.COLUMNS
+       WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='sentinela_instances' AND COLUMN_NAME='owner_user_id'`);
+    expect(cols.length).toBe(1);
+    expect(cols[0].IS_NULLABLE).toBe('NO');
+    const [fk] = await pool.query(
+      `SELECT REFERENCED_TABLE_NAME rt FROM information_schema.KEY_COLUMN_USAGE
+       WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='sentinela_instances' AND COLUMN_NAME='owner_user_id' AND REFERENCED_TABLE_NAME IS NOT NULL`);
+    expect(fk[0]?.rt).toBe('users');
+  });
+  it('tabela team_users existe com PK (team_id, user_id)', async () => {
+    expect(await tableExists('team_users')).toBe(true);
+    const [pk] = await pool.query(
+      `SELECT COLUMN_NAME FROM information_schema.STATISTICS
+       WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='team_users' AND INDEX_NAME='PRIMARY' ORDER BY SEQ_IN_INDEX`);
+    expect(pk.map((r) => r.COLUMN_NAME)).toEqual(['team_id', 'user_id']);
+  });
+});
+
 describe('índices de performance', () => {
   it('contacts.idx_contacts_tenant_phone e chats.idx_chats_tenant_title existem', async () => {
     expect(await indexExists('contacts','idx_contacts_tenant_phone')).toBe(true);

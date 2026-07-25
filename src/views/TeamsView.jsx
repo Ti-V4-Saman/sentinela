@@ -1,12 +1,11 @@
 import React, { useEffect, useState } from 'react';
-import { UsersRound, Plus, Pencil, Trash2, Loader2, AlertCircle, X, Radio, UserCog, Link2, Unlink } from 'lucide-react';
+import { UsersRound, Plus, Pencil, Trash2, Loader2, AlertCircle, X, Radio, UserCog, User, Link2, Unlink, Info } from 'lucide-react';
 import {
   listTeams, createTeam, updateTeam, deleteTeam,
-  listTeamInstances, linkTeamInstance, unlinkTeamInstance,
+  listTeamInstances, listTeamUsers, linkTeamUser, unlinkTeamUser,
   listTeamManagers, linkTeamManager, unlinkTeamManager,
   listTenants, listUsers,
 } from '../services/adminApi';
-import { fetchInstancesApi } from '../services/quepasaApi';
 import { getUser } from '../services/authApi';
 import { useToast } from '../components/ui/ToastProvider';
 import { useConfirm } from '../components/ui/ConfirmProvider';
@@ -28,7 +27,6 @@ function TeamModal({ initial, isSuper, tenants, onClose, onSaved, toast }) {
     setErrors(e);
     return Object.keys(e).length === 0;
   };
-
   const submit = async (e) => {
     e.preventDefault();
     if (!validate()) return;
@@ -40,7 +38,6 @@ function TeamModal({ initial, isSuper, tenants, onClose, onSaved, toast }) {
     } catch (err) { toast.error('Não foi possível salvar', friendlyError(err.message)); }
     finally { setSaving(false); }
   };
-
   const cls = (err) => `w-full bg-dark-input border rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none ${err ? 'border-rose-600' : 'border-dark-border focus:border-brand-emerald/60'}`;
 
   return (
@@ -79,32 +76,34 @@ function TeamModal({ initial, isSuper, tenants, onClose, onSaved, toast }) {
 }
 
 function TeamLinksModal({ team, isSuper, onClose, toast }) {
-  const [instances, setInstances] = useState([]);
-  const [managers, setManagers] = useState([]);
-  const [availInstances, setAvailInstances] = useState([]);
+  const [derived, setDerived] = useState([]);      // números derivados (read-only)
+  const [members, setMembers] = useState([]);       // usuários-membros (team_users)
+  const [managers, setManagers] = useState([]);     // gestores (team_managers)
+  const [availMembers, setAvailMembers] = useState([]);
   const [availGestores, setAvailGestores] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [instToAdd, setInstToAdd] = useState('');
+  const [memberToAdd, setMemberToAdd] = useState('');
   const [mgrToAdd, setMgrToAdd] = useState('');
 
   const load = async () => {
     setLoading(true);
     try {
-      const [ti, tm, allInst, allUsers] = await Promise.all([
-        listTeamInstances(team.id), listTeamManagers(team.id), fetchInstancesApi(), listUsers(isSuper ? team.tenantId : undefined),
+      const [di, tu, tm, allUsers] = await Promise.all([
+        listTeamInstances(team.id), listTeamUsers(team.id), listTeamManagers(team.id),
+        listUsers(isSuper ? team.tenantId : undefined),
       ]);
-      setInstances(ti); setManagers(tm);
-      const linkedInst = new Set(ti.map((i) => i.id));
-      setAvailInstances(allInst.filter((i) => Number(i.tenantId) === Number(team.tenantId) && !linkedInst.has(i.id)));
-      const linkedMgr = new Set(tm.map((m) => m.id));
-      setAvailGestores(allUsers.filter((u) => u.role === 'gestor' && Number(u.tenantId) === Number(team.tenantId) && !linkedMgr.has(u.id)));
+      setDerived(di); setMembers(tu); setManagers(tm);
+      const memberIds = new Set(tu.map((u) => u.id));
+      setAvailMembers(allUsers.filter((u) => u.role === 'usuario' && Number(u.tenantId) === Number(team.tenantId) && !memberIds.has(u.id)));
+      const mgrIds = new Set(tm.map((m) => m.id));
+      setAvailGestores(allUsers.filter((u) => u.role === 'gestor' && Number(u.tenantId) === Number(team.tenantId) && !mgrIds.has(u.id)));
     } catch (e) { toast.error('Erro ao carregar vínculos', friendlyError(e.message)); }
     finally { setLoading(false); }
   };
   useEffect(() => { load(); /* eslint-disable-next-line */ }, []);
 
-  const addInstance = async () => { if (!instToAdd) return; try { await linkTeamInstance(team.id, instToAdd); setInstToAdd(''); load(); toast.success('Número vinculado', 'Instância adicionada à equipe.'); } catch (e) { toast.error('Não foi possível vincular', friendlyError(e.message)); } };
-  const removeInstance = async (id) => { try { await unlinkTeamInstance(team.id, id); load(); toast.success('Número desvinculado', 'Instância removida da equipe.'); } catch (e) { toast.error('Não foi possível desvincular', friendlyError(e.message)); } };
+  const addMember = async () => { if (!memberToAdd) return; try { await linkTeamUser(team.id, memberToAdd); setMemberToAdd(''); load(); toast.success('Usuário vinculado', 'Membro adicionado; os números dele entram na equipe.'); } catch (e) { toast.error('Não foi possível vincular', friendlyError(e.message)); } };
+  const removeMember = async (id) => { try { await unlinkTeamUser(team.id, id); load(); toast.success('Usuário desvinculado', 'Membro removido; os números dele saem da equipe.'); } catch (e) { toast.error('Não foi possível desvincular', friendlyError(e.message)); } };
   const addManager = async () => { if (!mgrToAdd) return; try { await linkTeamManager(team.id, mgrToAdd); setMgrToAdd(''); load(); toast.success('Gestor vinculado', 'Gestor adicionado à equipe.'); } catch (e) { toast.error('Não foi possível vincular', friendlyError(e.message)); } };
   const removeManager = async (id) => { try { await unlinkTeamManager(team.id, id); load(); toast.success('Gestor desvinculado', 'Gestor removido da equipe.'); } catch (e) { toast.error('Não foi possível desvincular', friendlyError(e.message)); } };
 
@@ -112,10 +111,7 @@ function TeamLinksModal({ team, isSuper, onClose, toast }) {
     <div className="fixed inset-0 z-[90] flex items-center justify-center bg-black/60 px-4 py-8 overflow-y-auto">
       <div className="w-full max-w-lg bg-dark-card border border-dark-border rounded-2xl p-6 my-auto">
         <div className="flex items-center justify-between mb-4">
-          <div>
-            <h3 className="text-base font-bold font-outfit text-white">Equipe: {team.name}</h3>
-            <p className="text-xs text-slate-400">Vincular números e gestores</p>
-          </div>
+          <div><h3 className="text-base font-bold font-outfit text-white">Equipe: {team.name}</h3><p className="text-xs text-slate-400">Membros, números derivados e gestores</p></div>
           <button onClick={onClose} className="text-slate-400 hover:text-white"><X className="w-5 h-5" /></button>
         </div>
 
@@ -123,26 +119,46 @@ function TeamLinksModal({ team, isSuper, onClose, toast }) {
           <div className="flex items-center justify-center py-12 text-slate-400"><Loader2 className="w-6 h-6 animate-spin" /></div>
         ) : (
           <div className="space-y-6">
+            {/* Números derivados (read-only) */}
             <section>
-              <h4 className="flex items-center gap-2 text-sm font-semibold text-slate-200 mb-2"><Radio className="w-4 h-4 text-brand-emerald" /> Números vinculados</h4>
+              <h4 className="flex items-center gap-2 text-sm font-semibold text-slate-200 mb-1"><Radio className="w-4 h-4 text-brand-emerald" /> Números vinculados</h4>
+              <p className="flex items-center gap-1.5 text-[11px] text-slate-500 mb-2"><Info className="w-3 h-3" /> Automático — vem dos usuários vinculados abaixo.</p>
+              <div className="space-y-1.5">
+                {derived.length === 0 && <p className="text-xs text-slate-500">Nenhum número — vincule usuários abaixo.</p>}
+                {derived.map((i) => (
+                  <div key={i.id} className="flex items-center justify-between bg-dark-input/60 border border-dark-border rounded-lg px-3 py-2">
+                    <span className="text-sm text-slate-300">{i.name}</span>
+                    <span className="text-[11px] text-slate-500">dono: {i.ownerName}</span>
+                  </div>
+                ))}
+              </div>
+            </section>
+
+            {/* Usuários-membros */}
+            <section>
+              <h4 className="flex items-center gap-2 text-sm font-semibold text-slate-200 mb-2"><User className="w-4 h-4 text-brand-emerald" /> Usuários vinculados</h4>
               <div className="space-y-1.5 mb-3">
-                {instances.length === 0 && <p className="text-xs text-slate-500">Nenhuma instância vinculada.</p>}
-                {instances.map((i) => (
-                  <div key={i.id} className="flex items-center justify-between bg-dark-input border border-dark-border rounded-lg px-3 py-2">
-                    <span className="text-sm text-slate-200">{i.name}</span>
-                    <button onClick={() => removeInstance(i.id)} title="Desvincular" className="text-slate-400 hover:text-rose-400"><Unlink className="w-4 h-4" /></button>
+                {members.length === 0 && <p className="text-xs text-slate-500">Nenhum usuário vinculado.</p>}
+                {members.map((m) => (
+                  <div key={m.id} className="flex items-center justify-between bg-dark-input border border-dark-border rounded-lg px-3 py-2">
+                    <span className="text-sm text-slate-200">{m.name} <span className="text-xs text-slate-500 font-mono">{m.email}</span></span>
+                    <button onClick={() => removeMember(m.id)} title="Desvincular" className="text-slate-400 hover:text-rose-400"><Unlink className="w-4 h-4" /></button>
                   </div>
                 ))}
               </div>
               <div className="flex gap-2">
-                <select value={instToAdd} onChange={(e) => setInstToAdd(e.target.value)} className="flex-1 bg-dark-input border border-dark-border rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-brand-emerald/60">
-                  <option value="">Adicionar instância…</option>
-                  {availInstances.map((i) => <option key={i.id} value={i.id}>{i.name}</option>)}
+                <select value={memberToAdd} onChange={(e) => setMemberToAdd(e.target.value)} className="flex-1 bg-dark-input border border-dark-border rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-brand-emerald/60">
+                  <option value="">Adicionar usuário…</option>
+                  {availMembers.map((u) => <option key={u.id} value={u.id}>{u.name} ({u.email})</option>)}
                 </select>
-                <button onClick={addInstance} disabled={!instToAdd} className="flex items-center gap-1 px-3 py-2 text-xs font-semibold bg-brand-emerald hover:bg-brand-emeraldDark text-black rounded-lg disabled:opacity-50"><Link2 className="w-4 h-4" /></button>
+                <button onClick={addMember} disabled={!memberToAdd} className="flex items-center gap-1 px-3 py-2 text-xs font-semibold bg-brand-emerald hover:bg-brand-emeraldDark text-black rounded-lg disabled:opacity-50"><Link2 className="w-4 h-4" /></button>
               </div>
+              {availMembers.length === 0 && members.length === 0 && (
+                <p className="text-[11px] text-slate-500 mt-2">Sem usuários (papel "usuário") neste cliente. Crie-os na tela de Usuários.</p>
+              )}
             </section>
 
+            {/* Gestores (inalterado) */}
             <section>
               <h4 className="flex items-center gap-2 text-sm font-semibold text-slate-200 mb-2"><UserCog className="w-4 h-4 text-brand-emerald" /> Gestores vinculados</h4>
               <div className="space-y-1.5 mb-3">
@@ -161,9 +177,6 @@ function TeamLinksModal({ team, isSuper, onClose, toast }) {
                 </select>
                 <button onClick={addManager} disabled={!mgrToAdd} className="flex items-center gap-1 px-3 py-2 text-xs font-semibold bg-brand-emerald hover:bg-brand-emeraldDark text-black rounded-lg disabled:opacity-50"><Link2 className="w-4 h-4" /></button>
               </div>
-              {availGestores.length === 0 && managers.length === 0 && (
-                <p className="text-[11px] text-slate-500 mt-2">Sem gestores neste cliente. Crie usuários com papel "Gestor" na tela de Usuários.</p>
-              )}
             </section>
           </div>
         )}
@@ -199,7 +212,7 @@ export default function TeamsView() {
     const ok = await confirm({
       title: `Excluir equipe "${t.name}"?`,
       description: 'Esta ação é irreversível.',
-      impact: ['Os números e gestores vinculados NÃO são excluídos — apenas ficam sem equipe atribuída.'],
+      impact: ['Os usuários e gestores vinculados NÃO são excluídos — apenas ficam sem equipe. As instâncias também permanecem (continuam com seus donos).'],
       variant: 'danger',
       confirmLabel: 'Excluir permanentemente',
     });
@@ -213,10 +226,7 @@ export default function TeamsView() {
       <div className="flex items-center justify-between gap-4 mb-6">
         <div className="flex items-center gap-3">
           <div className="w-10 h-10 rounded-xl bg-brand-emerald/10 border border-brand-emerald/30 flex items-center justify-center text-brand-emerald"><UsersRound className="w-5 h-5" /></div>
-          <div>
-            <h2 className="text-2xl font-bold font-outfit text-white">Equipes</h2>
-            <p className="text-xs text-slate-400 mt-0.5">Agrupam números e vinculam gestores</p>
-          </div>
+          <div><h2 className="text-2xl font-bold font-outfit text-white">Equipes</h2><p className="text-xs text-slate-400 mt-0.5">Agrupam usuários; os números vêm dos usuários</p></div>
         </div>
         <button onClick={() => setEditModal({})} className="flex items-center gap-1.5 px-4 py-2 text-sm font-semibold bg-brand-emerald hover:bg-brand-emeraldDark text-black rounded-lg shadow-md shadow-brand-emerald/20 active:scale-95">
           <Plus className="w-4 h-4 stroke-[3]" /> Nova Equipe
@@ -229,24 +239,41 @@ export default function TeamsView() {
         <div className="bg-dark-card border border-dark-border rounded-2xl p-12 text-center">
           <UsersRound className="w-8 h-8 text-slate-500 mx-auto mb-3" />
           <h3 className="text-lg font-bold text-white mb-1">Nenhuma equipe</h3>
-          <p className="text-xs text-slate-400 mb-6">Crie uma equipe para agrupar números e vincular gestores.</p>
+          <p className="text-xs text-slate-400 mb-6">Crie uma equipe e vincule usuários a ela.</p>
           <button onClick={() => setEditModal({})} className="px-5 py-2.5 text-xs font-semibold bg-brand-emerald hover:bg-brand-emeraldDark text-black rounded-lg">Nova Equipe</button>
         </div>
       ) : (
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-          {teams.map((t) => (
-            <div key={t.id} className="bg-dark-card border border-dark-border rounded-xl p-4 flex flex-col justify-between">
-              <div className="mb-3">
-                <h3 className="font-bold font-outfit text-white">{t.name}</h3>
-                {isSuper && <p className="text-[11px] text-slate-400 mt-0.5">{tenantName(t.tenantId)}</p>}
-              </div>
-              <div className="flex items-center gap-1.5">
-                <button onClick={() => setLinksTeam(t)} className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold bg-brand-emerald/15 hover:bg-brand-emerald/25 text-brand-emerald border border-brand-emerald/30 rounded-lg"><Link2 className="w-3.5 h-3.5" /> Vínculos</button>
-                <button onClick={() => setEditModal(t)} title="Renomear" className="p-1.5 rounded-md text-slate-400 hover:text-white hover:bg-dark-hover"><Pencil className="w-4 h-4" /></button>
-                <button onClick={() => remove(t)} title="Excluir" className="p-1.5 rounded-md text-slate-400 hover:text-rose-400 hover:bg-rose-950/50"><Trash2 className="w-4 h-4" /></button>
-              </div>
-            </div>
-          ))}
+        <div className="bg-dark-card border border-dark-border rounded-2xl overflow-hidden">
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="text-left text-xs text-slate-400 border-b border-dark-border">
+                  <th className="px-4 py-3 font-medium">Nome</th>
+                  {isSuper && <th className="px-4 py-3 font-medium">Cliente</th>}
+                  <th className="px-4 py-3 font-medium text-center">Usuários</th>
+                  <th className="px-4 py-3 font-medium text-center">Gestores</th>
+                  <th className="px-4 py-3 font-medium text-right">Ações</th>
+                </tr>
+              </thead>
+              <tbody>
+                {teams.map((t) => (
+                  <tr key={t.id} className="border-b border-dark-border/50 last:border-0 hover:bg-dark-hover/40">
+                    <td className="px-4 py-3 font-semibold text-white">{t.name}</td>
+                    {isSuper && <td className="px-4 py-3 text-slate-400 text-xs">{tenantName(t.tenantId)}</td>}
+                    <td className="px-4 py-3 text-center text-slate-300">{t.userCount}</td>
+                    <td className="px-4 py-3 text-center text-slate-300">{t.managerCount}</td>
+                    <td className="px-4 py-3">
+                      <div className="flex items-center justify-end gap-1.5">
+                        <button onClick={() => setLinksTeam(t)} className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold bg-brand-emerald/15 hover:bg-brand-emerald/25 text-brand-emerald border border-brand-emerald/30 rounded-lg"><Link2 className="w-3.5 h-3.5" /> Vínculos</button>
+                        <button onClick={() => setEditModal(t)} title="Renomear" className="p-1.5 rounded-md text-slate-400 hover:text-white hover:bg-dark-hover"><Pencil className="w-4 h-4" /></button>
+                        <button onClick={() => remove(t)} title="Excluir" className="p-1.5 rounded-md text-slate-400 hover:text-rose-400 hover:bg-rose-950/50"><Trash2 className="w-4 h-4" /></button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         </div>
       )}
 
@@ -254,7 +281,7 @@ export default function TeamsView() {
         <TeamModal initial={editModal.id ? editModal : null} isSuper={isSuper} tenants={tenants} toast={toast}
           onClose={() => setEditModal(null)} onSaved={() => { setEditModal(null); load(); }} />
       )}
-      {linksTeam && <TeamLinksModal team={linksTeam} isSuper={isSuper} toast={toast} onClose={() => setLinksTeam(null)} />}
+      {linksTeam && <TeamLinksModal team={linksTeam} isSuper={isSuper} toast={toast} onClose={() => { setLinksTeam(null); load(); }} />}
     </main>
   );
 }

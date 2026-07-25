@@ -11,7 +11,7 @@ export default function Header({
   onRefresh,
   isRefreshing,
   onOpenCreateModal,
-  isAdmin = false,
+  canCreate = false,
   user = null,
   onLogout,
   onOpenMeusDados,
@@ -76,7 +76,7 @@ export default function Header({
             <RotateCw className={`w-4 h-4 ${isRefreshing ? 'animate-spin text-brand-emerald' : ''}`} />
           </button>
 
-          {isAdmin && (
+          {canCreate && (
             <button
               onClick={onOpenCreateModal}
               className="flex items-center gap-1.5 px-4 py-2 text-sm font-semibold bg-brand-emerald hover:bg-brand-emeraldDark text-black rounded-lg transition-all shadow-md shadow-brand-emerald/20 active:scale-95 ml-auto"
