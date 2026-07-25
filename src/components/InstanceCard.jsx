@@ -122,10 +122,10 @@ export default function InstanceCard({
                 </button>
               </div>
             </div>
-            {/* Badge do Tenant ID (reintroduzido do commit e17dfe7 do @GiovaniMaia) */}
+            {/* Badge do Cliente (tenant_id interno; label visível "Cliente") */}
             {instance.tenantId && (
               <div className="flex items-center justify-between text-[11px] font-mono text-slate-400 pt-1.5 border-t border-dark-border/50">
-                <span>Tenant ID:</span>
+                <span>Cliente:</span>
                 <span className="text-brand-emerald font-semibold bg-brand-emerald/10 border border-brand-emerald/30 px-1.5 py-0.5 rounded text-[10px]">
                   #{instance.tenantId}
                 </span>
