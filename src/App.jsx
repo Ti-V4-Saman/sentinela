@@ -16,6 +16,9 @@ import {
   MANDATORY_WEBHOOK_URL
 } from './services/quepasaApi';
 import { getUser, isAdmin as isAdminRole, logout } from './services/authApi';
+import TenantsView from './views/TenantsView';
+import UsersView from './views/UsersView';
+import TeamsView from './views/TeamsView';
 import {
   ShieldCheck,
   CheckCircle2,
@@ -32,6 +35,7 @@ export default function App() {
   const admin = isAdminRole();
   const handleLogout = () => { logout(); window.location.reload(); };
 
+  const [activeView, setActiveView] = useState('instances');
   const [instances, setInstances] = useState([]);
   const [serverConfig, setServerConfig] = useState({ serverUrl: '', apiKey: '', useMock: true });
   const [searchQuery, setSearchQuery] = useState('');
@@ -315,7 +319,14 @@ export default function App() {
         isAdmin={admin}
         user={currentUser}
         onLogout={handleLogout}
+        activeView={activeView}
+        setActiveView={setActiveView}
       />
+
+      {/* Views de gestão (fora de 'instances') */}
+      {activeView === 'tenants' && <TenantsView />}
+      {activeView === 'users' && <UsersView />}
+      {activeView === 'teams' && <TeamsView />}
 
       {/* Toast Notification Banner */}
       {toast && (
@@ -336,7 +347,8 @@ export default function App() {
         </div>
       )}
 
-      {/* Main Content Area */}
+      {/* Main Content Area (view de instâncias) */}
+      {activeView === 'instances' && (
       <main className="flex-1 max-w-7xl w-full mx-auto px-4 lg:px-8 py-8">
 
         {/* Section Header & Counters */}
@@ -416,6 +428,7 @@ export default function App() {
         )}
 
       </main>
+      )}
 
       {/* Footer */}
       <footer className="border-t border-dark-border/60 py-4 px-4 text-center text-xs text-slate-500 bg-dark-bg">
