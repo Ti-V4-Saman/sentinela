@@ -14,6 +14,9 @@ async function req(path, options = {}) {
   return data;
 }
 
+// ---- Perfil próprio (qualquer papel) ----
+export const updateProfile = (body) => req('/api/users/me', { method: 'PATCH', body: JSON.stringify(body) });
+
 // ---- Tenants (superadmin) ----
 export const listTenants = () => req('/api/tenants');
 export const createTenant = (body) => req('/api/tenants', { method: 'POST', body: JSON.stringify(body) });

@@ -19,6 +19,10 @@ import { getUser, isAdmin as isAdminRole, logout } from './services/authApi';
 import TenantsView from './views/TenantsView';
 import UsersView from './views/UsersView';
 import TeamsView from './views/TeamsView';
+import MeusDadosModal from './components/MeusDadosModal';
+import { useToast } from './components/ui/ToastProvider';
+import { useConfirm } from './components/ui/ConfirmProvider';
+import { friendlyError } from './utils/validation';
 import {
   ShieldCheck,
   CheckCircle2,
@@ -46,14 +50,14 @@ export default function App() {
   const [connectingInstance, setConnectingInstance] = useState(null);
   const [isServerModalOpen, setIsServerModalOpen] = useState(false);
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
+  const [isMeusDadosOpen, setIsMeusDadosOpen] = useState(false);
 
-  // Toast notification state
-  const [toast, setToast] = useState(null);
-
-  const showToast = (message, type = 'success') => {
-    setToast({ message, type });
-    setTimeout(() => setToast(null), 4000);
-  };
+  // Toast unificado (empilha, auto-dismiss).
+  const toast = useToast();
+  const confirm = useConfirm();
+  const showToast = (message, type = 'success') =>
+    type === 'error' ? toast.error('Não foi possível concluir', message)
+      : toast.success(type === 'warning' ? 'Atenção' : 'Pronto', message);
 
   // Initial Load
   useEffect(() => {
@@ -212,15 +216,20 @@ export default function App() {
   const handleDeleteInstance = async (id) => {
     const target = instances.find((i) => i.id === id);
     if (!target) return;
-    if (window.confirm(`Tem certeza que deseja remover a caixa de conexão "${target.name}"?`)) {
-      try {
-        await deleteInstanceApi(id);
-        const updatedList = instances.filter((inst) => inst.id !== id);
-        setInstances(updatedList);
-        showToast(`Instância ${target.name} removida.`, 'warning');
-      } catch (err) {
-        showToast('Erro ao remover instância.', 'error');
-      }
+    const ok = await confirm({
+      title: `Excluir instância "${target.name}"?`,
+      description: 'Esta ação é irreversível. A conexão será removida do painel.',
+      impact: ['O histórico de mensagens capturado por este número deixa de ser acessível pelo painel.'],
+      variant: 'danger',
+      confirmLabel: 'Excluir permanentemente',
+    });
+    if (!ok) return;
+    try {
+      await deleteInstanceApi(id);
+      setInstances(instances.filter((inst) => inst.id !== id));
+      toast.success('Instância removida', `"${target.name}" foi excluída.`);
+    } catch (err) {
+      toast.error('Não foi possível remover', friendlyError(err.message));
     }
   };
 
@@ -319,6 +328,7 @@ export default function App() {
         isAdmin={admin}
         user={currentUser}
         onLogout={handleLogout}
+        onOpenMeusDados={() => setIsMeusDadosOpen(true)}
         activeView={activeView}
         setActiveView={setActiveView}
       />
@@ -327,25 +337,6 @@ export default function App() {
       {activeView === 'tenants' && <TenantsView />}
       {activeView === 'users' && <UsersView />}
       {activeView === 'teams' && <TeamsView />}
-
-      {/* Toast Notification Banner */}
-      {toast && (
-        <div className="fixed top-20 right-6 z-50 animate-in slide-in-from-top-4 duration-300">
-          <div className={`px-4 py-3 rounded-xl border shadow-xl flex items-center gap-3 text-sm ${toast.type === 'error'
-              ? 'bg-rose-950 border-rose-800 text-rose-200'
-              : toast.type === 'warning'
-                ? 'bg-amber-950 border-amber-800 text-amber-200'
-                : 'bg-emerald-950 border-emerald-800 text-emerald-200'
-            }`}>
-            {toast.type === 'error' ? (
-              <AlertCircle className="w-5 h-5 text-rose-400 shrink-0" />
-            ) : (
-              <CheckCircle2 className="w-5 h-5 text-brand-emerald shrink-0" />
-            )}
-            <span>{toast.message}</span>
-          </div>
-        </div>
-      )}
 
       {/* Main Content Area (view de instâncias) */}
       {activeView === 'instances' && (
@@ -463,6 +454,10 @@ export default function App() {
           onClose={() => setIsCreateModalOpen(false)}
           onCreate={handleCreateInstance}
         />
+      )}
+
+      {isMeusDadosOpen && (
+        <MeusDadosModal onClose={() => setIsMeusDadosOpen(false)} />
       )}
 
     </div>
