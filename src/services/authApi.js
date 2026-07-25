@@ -24,6 +24,12 @@ export function getUser() {
   catch { return null; }
 }
 
+export function updateStoredUser(patch) {
+  const u = getUser();
+  if (!u) return;
+  localStorage.setItem(USER_KEY, JSON.stringify({ ...u, ...patch }));
+}
+
 export function getRole() { return getUser()?.role || null; }
 export function isAuthenticated() { return !!getToken(); }
 export function isAdmin() { const r = getRole(); return r === 'admin' || r === 'superadmin'; }

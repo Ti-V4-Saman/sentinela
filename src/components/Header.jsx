@@ -1,31 +1,6 @@
 import React from 'react';
-import {
-  Search,
-  Plus,
-  RotateCw,
-  ShieldCheck,
-  SlidersHorizontal,
-  LogOut,
-  Radio,
-  Building2,
-  Users,
-  UsersRound
-} from 'lucide-react';
-
-const ROLE_LABELS = {
-  superadmin: 'Superadmin',
-  admin: 'Administrador',
-  gestor: 'Gestor',
-  usuario: 'Usuário',
-};
-
-// Itens de navegação por papel.
-const NAV_ITEMS = [
-  { key: 'instances', label: 'Instâncias', icon: Radio, roles: ['superadmin', 'admin', 'gestor', 'usuario'] },
-  { key: 'tenants', label: 'Tenants', icon: Building2, roles: ['superadmin'] },
-  { key: 'users', label: 'Usuários', icon: Users, roles: ['superadmin', 'admin'] },
-  { key: 'teams', label: 'Equipes', icon: UsersRound, roles: ['superadmin', 'admin'] },
-];
+import { Search, Plus, RotateCw, ShieldCheck, SlidersHorizontal } from 'lucide-react';
+import UserMenu from './UserMenu';
 
 export default function Header({
   searchQuery,
@@ -38,60 +13,30 @@ export default function Header({
   isAdmin = false,
   user = null,
   onLogout,
+  onOpenMeusDados,
   activeView = 'instances',
   setActiveView
 }) {
-  const role = user?.role;
-  const navItems = NAV_ITEMS.filter((i) => i.roles.includes(role));
-
   return (
     <header className="sticky top-0 z-30 bg-dark-bg/95 backdrop-blur border-b border-dark-border px-4 lg:px-8">
-      {/* Linha 1: logo + navegação + usuário */}
+      {/* Linha 1: logo (volta para instâncias) + menu do usuário */}
       <div className="max-w-7xl mx-auto flex items-center justify-between gap-4 py-3">
-        <div className="flex items-center gap-2.5 shrink-0">
+        <button onClick={() => setActiveView?.('instances')} className="flex items-center gap-2.5 shrink-0 group">
           <div className="w-9 h-9 rounded-xl bg-gradient-to-tr from-brand-emeraldDark to-brand-emerald flex items-center justify-center text-black font-bold shadow-lg shadow-brand-emerald/20">
             <ShieldCheck className="w-5 h-5 text-black" />
           </div>
-          <h1 className="text-lg font-bold font-outfit text-white tracking-wide hidden sm:block">Sentinela</h1>
-        </div>
-
-        {/* Navegação por papel */}
-        <nav className="flex items-center gap-1 flex-1 overflow-x-auto">
-          {navItems.map((item) => {
-            const Icon = item.icon;
-            const active = activeView === item.key;
-            return (
-              <button
-                key={item.key}
-                onClick={() => setActiveView?.(item.key)}
-                className={`flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium rounded-lg whitespace-nowrap transition-all ${
-                  active
-                    ? 'bg-brand-emerald/15 text-brand-emerald border border-brand-emerald/30'
-                    : 'text-slate-400 hover:text-white hover:bg-dark-hover border border-transparent'
-                }`}
-              >
-                <Icon className="w-4 h-4" />
-                {item.label}
-              </button>
-            );
-          })}
-        </nav>
-
-        {user && (
-          <div className="flex items-center gap-2 shrink-0">
-            <div className="hidden sm:block text-right leading-tight">
-              <div className="text-xs font-semibold text-slate-200">{user.name}</div>
-              <div className="text-[10px] text-slate-400">{ROLE_LABELS[user.role] || user.role}</div>
-            </div>
-            <button
-              onClick={onLogout}
-              title="Sair"
-              className="p-2 bg-dark-card hover:bg-rose-950 border border-dark-border hover:border-rose-800 rounded-lg text-slate-300 hover:text-rose-300 transition-all"
-            >
-              <LogOut className="w-4 h-4" />
-            </button>
+          <div className="text-left">
+            <h1 className="text-lg font-bold font-outfit text-white tracking-wide leading-none">Sentinela</h1>
+            <p className="text-[10px] text-slate-400 hidden sm:block">Monitoramento WhatsApp</p>
           </div>
-        )}
+        </button>
+
+        <UserMenu
+          user={user}
+          onOpenMeusDados={onOpenMeusDados}
+          setActiveView={setActiveView}
+          onLogout={onLogout}
+        />
       </div>
 
       {/* Linha 2: controles da view de instâncias (só quando ativa) */}
