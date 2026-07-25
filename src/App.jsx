@@ -23,6 +23,7 @@ import MeusDadosModal from './components/MeusDadosModal';
 import { useToast } from './components/ui/ToastProvider';
 import { useConfirm } from './components/ui/ConfirmProvider';
 import { friendlyError } from './utils/validation';
+import { homeView } from './utils/nav';
 import {
   ShieldCheck,
   CheckCircle2,
@@ -39,7 +40,7 @@ export default function App() {
   const admin = isAdminRole();
   const handleLogout = () => { logout(); window.location.reload(); };
 
-  const [activeView, setActiveView] = useState('instances');
+  const [activeView, setActiveView] = useState(homeView(currentUser?.role));
   const [instances, setInstances] = useState([]);
   const [serverConfig, setServerConfig] = useState({ serverUrl: '', apiKey: '', useMock: true });
   const [searchQuery, setSearchQuery] = useState('');
