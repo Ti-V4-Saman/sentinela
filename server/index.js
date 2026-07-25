@@ -8,6 +8,7 @@ import { createInstancesRouter } from './routes/instances.js';
 import { createTenantsRouter } from './routes/tenants.js';
 import { createUsersRouter } from './routes/users.js';
 import { createTeamsRouter } from './routes/teams.js';
+import { createProfileRouter } from './routes/profile.js';
 
 export function createApp(dbPool = pool) {
   const app = express();
@@ -23,6 +24,8 @@ export function createApp(dbPool = pool) {
   // Rotas protegidas (JWT + tenant scope)
   app.use('/api/instances', authenticate, createInstancesRouter(dbPool));
   app.use('/api/tenants', authenticate, createTenantsRouter(dbPool));
+  // /me antes de /:id para não cair no router de gestão (restrito a admin).
+  app.use('/api/users/me', authenticate, createProfileRouter(dbPool));
   app.use('/api/users', authenticate, createUsersRouter(dbPool));
   app.use('/api/teams', authenticate, createTeamsRouter(dbPool));
 
