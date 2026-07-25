@@ -6,26 +6,26 @@ export function tenantFilter(auth, alias = '') {
 
 // Conjunto de instâncias visíveis para o usuário.
 // admin/superadmin => 'ALL' (o filtro de tenant já basta).
+// gestor => instâncias dos usuários-membros das equipes que ele gerencia (derivado do dono).
+// usuario => as próprias (owner_user_id = ele).
 export async function visibleInstanceIds(pool, auth) {
   if (auth.role === 'superadmin' || auth.role === 'admin') return 'ALL';
 
   if (auth.role === 'gestor') {
     const [rows] = await pool.query(
-      `SELECT DISTINCT ti.instance_id
+      `SELECT DISTINCT si.id
        FROM team_managers tm
-       JOIN team_instances ti ON ti.team_id = tm.team_id
        JOIN teams t ON t.id = tm.team_id
+       JOIN team_users tu ON tu.team_id = tm.team_id
+       JOIN sentinela_instances si ON si.owner_user_id = tu.user_id
        WHERE tm.user_id = ? AND t.tenant_id = ?`,
       [auth.userId, auth.tenantId]);
-    return rows.map(r => r.instance_id);
+    return rows.map(r => r.id);
   }
 
   // usuario
   const [rows] = await pool.query(
-    `SELECT ui.instance_id
-     FROM user_instances ui
-     JOIN sentinela_instances si ON si.id = ui.instance_id
-     WHERE ui.user_id = ? AND si.tenant_id = ?`,
+    'SELECT id FROM sentinela_instances WHERE owner_user_id = ? AND tenant_id = ?',
     [auth.userId, auth.tenantId]);
-  return rows.map(r => r.instance_id);
+  return rows.map(r => r.id);
 }

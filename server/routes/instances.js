@@ -3,10 +3,11 @@ import { tenantFilter, visibleInstanceIds } from '../middleware/tenantScope.js';
 import { loadActor, isAdmin } from '../middleware/actor.js';
 
 // includeToken controla exposição do token QuePasa (credencial sensível):
-// só admin/superadmin recebem; gestor/usuario (read-only) não.
+// só admin/superadmin e o DONO da instância recebem.
 const formatInstance = (row, { includeToken = false } = {}) => ({
   id: row.id,
   tenantId: row.tenant_id,
+  ownerUserId: row.owner_user_id,
   name: row.name,
   ...(includeToken ? { token: row.token } : {}),
   status: row.status,
@@ -21,14 +22,13 @@ const formatInstance = (row, { includeToken = false } = {}) => ({
 export function createInstancesRouter(pool) {
   const router = express.Router();
 
-  // GET all (tenant + role scoped)
+  // GET all (tenant + role scoped). Token só para admin ou dono.
   router.get('/', async (req, res) => {
     try {
       const { sql: tSql, params } = tenantFilter(req.auth);
       const visible = await visibleInstanceIds(pool, req.auth);
 
-      const where = [];
-      const args = [];
+      const where = [], args = [];
       if (tSql) { where.push(tSql); args.push(...params); }
       if (visible !== 'ALL') {
         if (visible.length === 0) return res.json([]);
@@ -38,39 +38,59 @@ export function createInstancesRouter(pool) {
       const clause = where.length ? `WHERE ${where.join(' AND ')}` : '';
       const [rows] = await pool.query(
         `SELECT * FROM sentinela_instances ${clause} ORDER BY created_at DESC`, args);
-      const includeToken = isAdmin(req.auth.role);
-      res.json(rows.map((r) => formatInstance(r, { includeToken })));
+      const admin = isAdmin(req.auth.role);
+      res.json(rows.map((r) => formatInstance(r, {
+        includeToken: admin || Number(r.owner_user_id) === Number(req.auth.userId),
+      })));
     } catch (e) {
       console.error('list instances:', e);
       res.status(e.statusCode || 500).json({ error: 'Falha ao listar instâncias' });
     }
   });
 
-  // POST (admin/superadmin só; papel/status recarregados do banco)
+  // POST: qualquer usuário autenticado cria a PRÓPRIA instância.
+  // owner_user_id = usuário logado; tenant_id = tenant do usuário (mesmo tenant garantido).
+  // Superadmin não tem tenant → não pode ser dono de instância.
   router.post('/', async (req, res) => {
     try {
       const actor = await loadActor(pool, req.auth.userId);
       if (!actor || actor.status !== 'active') {
         return res.status(401).json({ error: 'Sessão inválida ou usuário desativado' });
       }
-      if (!isAdmin(actor.role)) {
-        return res.status(403).json({ error: 'Sem permissão para criar instância' });
+      if (actor.role === 'superadmin' || !actor.tenant_id) {
+        return res.status(403).json({ error: 'Superadmin não possui cliente para ser dono de instância' });
       }
       const { id, name, token, status, phoneNumber, contactName, avatarUrl, webhookUrl } = req.body || {};
-      const tenantId = actor.role === 'superadmin' ? req.body.tenantId : actor.tenant_id;
-      if (!id || !name || !token || !tenantId) {
-        return res.status(400).json({ error: 'id, name, token e tenantId são obrigatórios' });
+      if (!id || !name || !token) {
+        return res.status(400).json({ error: 'id, name e token são obrigatórios' });
       }
-      // Valida existência do tenant (superadmin fornece via body) para retornar 400, não 500.
-      const [t] = await pool.query('SELECT id FROM tenants WHERE id = ?', [tenantId]);
-      if (t.length === 0) return res.status(400).json({ error: 'tenantId inexistente' });
+      // Número obrigatório para criar/conectar instância.
+      const phoneDigits = String(phoneNumber || '').replace(/\D/g, '');
+      if (phoneDigits.length < 10) {
+        return res.status(400).json({ error: 'Informe o número de telefone (com DDD e país) da instância' });
+      }
+      // Não permitir nova instância para um número que já tem instância de um USUÁRIO ATIVO
+      // no mesmo cliente — orienta a reconectar a existente. (Instância de usuário desativado
+      // não bloqueia: o número foi "aposentado" junto com o usuário.)
+      const [existing] = await pool.query(
+        `SELECT si.id, si.name, si.phone_number, u.name AS owner_name
+         FROM sentinela_instances si JOIN users u ON u.id = si.owner_user_id
+         WHERE si.tenant_id = ? AND u.status = 'active'`, [actor.tenant_id]);
+      const conflict = existing.find((r) => String(r.phone_number || '').replace(/\D/g, '') === phoneDigits);
+      if (conflict) {
+        return res.status(409).json({
+          error: `Já existe uma instância ativa para esse número (dono: ${conflict.owner_name}). Reconecte a instância "${conflict.name}" em vez de criar uma nova.`,
+          existingInstanceId: conflict.id,
+          existingInstanceName: conflict.name,
+        });
+      }
 
       await pool.query(
         `INSERT INTO sentinela_instances
-         (id, tenant_id, name, token, status, phone_number, contact_name, avatar_url, webhook_url)
-         VALUES (?,?,?,?,?,?,?,?,?)`,
-        [id, tenantId, name, token, status || 'Disconnected',
-         phoneNumber || null, contactName || null, avatarUrl || null, webhookUrl || null]);
+         (id, tenant_id, owner_user_id, name, token, status, phone_number, contact_name, avatar_url, webhook_url)
+         VALUES (?,?,?,?,?,?,?,?,?,?)`,
+        [id, actor.tenant_id, actor.id, name, token, status || 'Disconnected',
+         phoneDigits, contactName || null, avatarUrl || null, webhookUrl || null]);
       const [rows] = await pool.query('SELECT * FROM sentinela_instances WHERE id = ?', [id]);
       res.status(201).json(formatInstance(rows[0], { includeToken: true }));
     } catch (e) {
@@ -79,9 +99,8 @@ export function createInstancesRouter(pool) {
     }
   });
 
-  // PUT (admin/superadmin só; dentro do tenant). Gestão de instância é papel do admin;
-  // gestor/usuario são read-only. Instância de outro tenant → 404 (não 403), para não
-  // revelar existência de IDs em outros tenants.
+  // PUT: o DONO (sua própria) ou admin/superadmin do tenant.
+  // Instância fora do escopo → 404 (não revela existência).
   router.put('/:id', async (req, res) => {
     const { id } = req.params;
     try {
@@ -89,13 +108,15 @@ export function createInstancesRouter(pool) {
       if (!actor || actor.status !== 'active') {
         return res.status(401).json({ error: 'Sessão inválida ou usuário desativado' });
       }
-      if (!isAdmin(actor.role)) {
-        return res.status(403).json({ error: 'Sem permissão para alterar instância' });
-      }
-      const [owned] = await pool.query('SELECT tenant_id FROM sentinela_instances WHERE id = ?', [id]);
-      if (owned.length === 0) return res.status(404).json({ error: 'Instância não encontrada' });
-      if (actor.role !== 'superadmin' && Number(owned[0].tenant_id) !== Number(actor.tenant_id)) {
-        return res.status(404).json({ error: 'Instância não encontrada' });
+      const [rowsOwn] = await pool.query('SELECT tenant_id, owner_user_id FROM sentinela_instances WHERE id = ?', [id]);
+      if (rowsOwn.length === 0) return res.status(404).json({ error: 'Instância não encontrada' });
+      const inst = rowsOwn[0];
+      const sameTenant = Number(inst.tenant_id) === Number(actor.tenant_id);
+      const isOwner = Number(inst.owner_user_id) === Number(actor.id);
+      const canManage = actor.role === 'superadmin' || (isAdmin(actor.role) && sameTenant) || isOwner;
+      if (!canManage) {
+        // Não-dono sem privilégio no tenant: 404 para não vazar existência.
+        return res.status(sameTenant || actor.role === 'superadmin' ? 403 : 404).json({ error: sameTenant ? 'Sem permissão para alterar esta instância' : 'Instância não encontrada' });
       }
 
       const map = {
@@ -118,29 +139,9 @@ export function createInstancesRouter(pool) {
     }
   });
 
-  // DELETE (admin/superadmin, dentro do tenant; outro tenant → 404)
-  router.delete('/:id', async (req, res) => {
-    const { id } = req.params;
-    try {
-      const actor = await loadActor(pool, req.auth.userId);
-      if (!actor || actor.status !== 'active') {
-        return res.status(401).json({ error: 'Sessão inválida ou usuário desativado' });
-      }
-      if (!isAdmin(actor.role)) {
-        return res.status(403).json({ error: 'Sem permissão' });
-      }
-      const [owned] = await pool.query('SELECT tenant_id FROM sentinela_instances WHERE id = ?', [id]);
-      if (owned.length === 0) return res.status(404).json({ error: 'Instância não encontrada' });
-      if (actor.role !== 'superadmin' && Number(owned[0].tenant_id) !== Number(actor.tenant_id)) {
-        return res.status(404).json({ error: 'Instância não encontrada' });
-      }
-      await pool.query('DELETE FROM sentinela_instances WHERE id = ?', [id]);
-      res.json({ success: true, message: 'Instância removida' });
-    } catch (e) {
-      console.error('delete instance:', e);
-      res.status(500).json({ error: 'Falha ao remover instância' });
-    }
-  });
+  // Instância NUNCA é excluída (histórico usado em pesquisas/relatórios).
+  // Para "remover" alguém, desative o usuário — a instância continua ativa.
+  // (Sem rota DELETE por decisão de produto.)
 
   return router;
 }

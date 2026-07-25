@@ -38,6 +38,9 @@ import {
 export default function App() {
   const currentUser = getUser();
   const admin = isAdminRole();
+  const myId = currentUser?.id;
+  // Qualquer usuário com cliente (não-superadmin) cria/conecta as próprias instâncias.
+  const canCreateInstance = !!currentUser && currentUser.role !== 'superadmin';
   const handleLogout = () => { logout(); window.location.reload(); };
 
   const [activeView, setActiveView] = useState(homeView(currentUser?.role));
@@ -213,26 +216,7 @@ export default function App() {
     }
   };
 
-  // Delete instance handler
-  const handleDeleteInstance = async (id) => {
-    const target = instances.find((i) => i.id === id);
-    if (!target) return;
-    const ok = await confirm({
-      title: `Excluir instância "${target.name}"?`,
-      description: 'Esta ação é irreversível. A conexão será removida do painel.',
-      impact: ['O histórico de mensagens capturado por este número deixa de ser acessível pelo painel.'],
-      variant: 'danger',
-      confirmLabel: 'Excluir permanentemente',
-    });
-    if (!ok) return;
-    try {
-      await deleteInstanceApi(id);
-      setInstances(instances.filter((inst) => inst.id !== id));
-      toast.success('Instância removida', `"${target.name}" foi excluída.`);
-    } catch (err) {
-      toast.error('Não foi possível remover', friendlyError(err.message));
-    }
-  };
+  // Instância NUNCA é excluída (decisão de produto — histórico p/ pesquisas/relatórios).
 
   // Update instance token handler
   const handleUpdateToken = async (id, newToken) => {
@@ -250,18 +234,13 @@ export default function App() {
 
   // Create new instance handler
   const handleCreateInstance = async (newInstance) => {
-    try {
-      const created = await createInstanceApi(newInstance);
-      const updatedList = [created, ...instances];
-      setInstances(updatedList);
-      setIsCreateModalOpen(false);
-      showToast(`Instância "${created.name}" criada com sucesso! Token cadastrado no Webhook.`);
-
-      // Open connect modal immediately to scan QR code
-      setConnectingInstance(created);
-    } catch (err) {
-      showToast('Erro ao criar instância no banco de dados.', 'error');
-    }
+    // Erros (ex.: número duplicado → 409) são relançados para o modal exibir inline.
+    const created = await createInstanceApi(newInstance);
+    const updatedList = [created, ...instances];
+    setInstances(updatedList);
+    setIsCreateModalOpen(false);
+    toast.success('Instância criada', `"${created.name}" foi criada. Escaneie o QR para conectar.`);
+    setConnectingInstance(created);
   };
 
 
@@ -326,7 +305,7 @@ export default function App() {
         onOpenCreateModal={() => setIsCreateModalOpen(true)}
         onOpenServerConfig={() => setIsServerModalOpen(true)}
         serverConfig={serverConfig}
-        isAdmin={admin}
+        canCreate={canCreateInstance}
         user={currentUser}
         onLogout={handleLogout}
         onOpenMeusDados={() => setIsMeusDadosOpen(true)}
@@ -382,9 +361,8 @@ export default function App() {
                 instance={instance}
                 onConnect={handleStartConnect}
                 onDisconnect={handleDisconnect}
-                onDelete={handleDeleteInstance}
                 onUpdateToken={handleUpdateToken}
-                isAdmin={admin}
+                canManage={admin || instance.ownerUserId === myId}
               />
 
             ))}
@@ -408,7 +386,7 @@ export default function App() {
               >
                 Limpar Filtros
               </button>
-            ) : admin ? (
+            ) : canCreateInstance ? (
               <button
                 onClick={() => setIsCreateModalOpen(true)}
                 className="px-5 py-2.5 text-xs font-semibold bg-brand-emerald hover:bg-brand-emeraldDark text-black rounded-lg transition-all shadow-md shadow-brand-emerald/20"

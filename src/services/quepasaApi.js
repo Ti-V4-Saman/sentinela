@@ -90,7 +90,10 @@ export const createInstanceApi = async (instance) => {
       body: JSON.stringify(instance),
     });
     if (res.status === 401) { handleUnauthorized(); throw new Error('Unauthorized'); }
-    if (!res.ok) throw new Error('Failed to create instance');
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error(data.error || 'Failed to create instance');
+    }
     return await res.json();
   } catch (e) {
     console.error('Error creating instance in DB:', e);

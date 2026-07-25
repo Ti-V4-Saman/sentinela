@@ -1,13 +1,12 @@
 import React, { useState } from 'react';
-import { 
-  Settings, 
-  Copy, 
-  Check, 
-  Eye, 
-  EyeOff, 
-  QrCode, 
-  Power, 
-  Trash2, 
+import {
+  Settings,
+  Copy,
+  Check,
+  Eye,
+  EyeOff,
+  QrCode,
+  Power,
   XCircle,
   Lock
 } from 'lucide-react';
@@ -17,9 +16,8 @@ export default function InstanceCard({
   instance,
   onConnect,
   onDisconnect,
-  onDelete,
   onUpdateToken,
-  isAdmin = false
+  canManage = false
 }) {
   const [showToken, setShowToken] = useState(false);
   const [copied, setCopied] = useState(false);
@@ -59,7 +57,7 @@ export default function InstanceCard({
             {instance.name}
           </h3>
           {/* Editar token — só admin/superadmin (gestor/usuario não recebem o token) */}
-          {isAdmin && (
+          {canManage && (
             <button
               title="Editar Token da Instância"
               onClick={() => setIsEditingToken(!isEditingToken)}
@@ -71,7 +69,7 @@ export default function InstanceCard({
         </div>
 
         {/* Bloco de token — só admin/superadmin. gestor/usuario não recebem instance.token. */}
-        {!isAdmin ? null : isEditingToken ? (
+        {!canManage ? null : isEditingToken ? (
           <div className="bg-dark-input border border-brand-emerald/50 rounded-lg p-2 mb-4 space-y-2 animate-in fade-in duration-150">
             <label className="block text-[10px] uppercase font-mono text-slate-400">Token do QuePasa:</label>
             <input 
@@ -177,7 +175,7 @@ export default function InstanceCard({
               <span className="w-2 h-2 rounded-full bg-brand-emerald animate-pulse" />
               Connected
             </span>
-          ) : isAdmin ? (
+          ) : canManage ? (
             <button
               onClick={() => onConnect(instance)}
               className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold bg-rose-950/80 hover:bg-rose-900 text-rose-300 border border-rose-800 transition-colors"
@@ -194,7 +192,7 @@ export default function InstanceCard({
         </div>
 
         {/* Ações de gestão — só admin/superadmin. gestor/usuario são read-only. */}
-        {isAdmin && (
+        {canManage && (
         <div className="flex items-center gap-1.5 flex-wrap">
 
           {/* If Disconnected: Connect / QR Code button */}
@@ -221,15 +219,7 @@ export default function InstanceCard({
             </button>
           )}
 
-          {/* Delete Button */}
-          <button
-            onClick={() => onDelete(instance.id)}
-            className="flex items-center gap-1 px-3 py-1.5 text-xs font-semibold bg-danger hover:bg-danger-hover text-white rounded-lg transition-colors shadow-sm"
-            title="Excluir Instância"
-          >
-            <Trash2 className="w-3.5 h-3.5" />
-            Delete
-          </button>
+          {/* Instância NUNCA é excluída (histórico p/ pesquisas/relatórios) — sem botão de excluir. */}
 
         </div>
         )}

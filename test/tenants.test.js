@@ -95,7 +95,7 @@ describe('CRUD /api/tenants (superadmin, RBAC do banco, transação com rollback
       await seedUsers(conn);
       const app = makeApp(conn);
       const sa = bearer({ userId: 900001, tenantId: null, role: 'superadmin' });
-      await conn.query("INSERT INTO sentinela_instances (id,tenant_id,name,token) VALUES ('__t_del__',900001,'X','tk')");
+      await conn.query("INSERT INTO sentinela_instances (id,tenant_id,owner_user_id,name,token) VALUES ('__t_del__',900001,900002,'X','tk')");
       const del = await request(app).delete('/api/tenants/900001').set('Authorization', sa);
       expect(del.status).toBe(409);
     });
