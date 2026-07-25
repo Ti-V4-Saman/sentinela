@@ -22,27 +22,58 @@ async function seed(conn) {
     (900050,900001,'A1','a1@__test__','x','admin','active'),
     (900011,900001,'U1','u1@__test__','x','usuario','active'),
     (900012,900001,'U2','u2@__test__','x','usuario','active'),
+    (900014,900001,'U4','u4@__test__','x','usuario','disabled'),
     (900060,900002,'A2','a2@__test__','x','admin','active'),
     (900013,900002,'U3','u3@__test__','x','usuario','active')`);
-  await conn.query(`INSERT INTO sentinela_instances (id,tenant_id,owner_user_id,name,token) VALUES
-    ('__t_i1__',900001,900011,'A','t1'),
-    ('__t_i2__',900001,900012,'B','t2'),
-    ('__t_i3__',900002,900013,'C','t3')`);
+  await conn.query(`INSERT INTO sentinela_instances (id,tenant_id,owner_user_id,name,token,phone_number) VALUES
+    ('__t_i1__',900001,900011,'A','t1','5531999991111'),
+    ('__t_i2__',900001,900012,'B','t2',NULL),
+    ('__t_i3__',900002,900013,'C','t3',NULL),
+    ('__t_i4__',900001,900014,'D','t4','5531999992222')`);
 }
 
 beforeAll(async () => { process.env.JWT_SECRET = process.env.JWT_SECRET || 'test-secret'; await applyMigrations(); });
 afterAll(() => getPool().end());
 
-describe('POST /api/instances (dono automático)', () => {
-  it('usuário cria a própria instância — owner_user_id = ele, tenant = dele', async () => {
+describe('POST /api/instances (dono automático + número único)', () => {
+  it('usuário cria a própria instância com número — owner = ele, tenant = dele', async () => {
     await withTx(async (conn) => {
       await seed(conn);
       const res = await request(makeApp(conn)).post('/api/instances')
         .set('Authorization', bearer({ userId: 900011, tenantId: 900001, role: 'usuario' }))
-        .send({ id: '__new_i__', name: 'Nova', token: 'tkn' });
+        .send({ id: '__new_i__', name: 'Nova', token: 'tkn', phoneNumber: '5531999990000' });
       expect(res.status).toBe(201);
       expect(res.body.ownerUserId).toBe(900011);
       expect(res.body.tenantId).toBe(900001);
+    });
+  });
+  it('sem número (ou muito curto) → 400', async () => {
+    await withTx(async (conn) => {
+      await seed(conn);
+      const res = await request(makeApp(conn)).post('/api/instances')
+        .set('Authorization', bearer({ userId: 900011, tenantId: 900001, role: 'usuario' }))
+        .send({ id: '__x__', name: 'X', token: 't' });
+      expect(res.status).toBe(400);
+    });
+  });
+  it('número já usado por instância de usuário ATIVO → 409 (orienta a reconectar)', async () => {
+    await withTx(async (conn) => {
+      await seed(conn);
+      const res = await request(makeApp(conn)).post('/api/instances')
+        .set('Authorization', bearer({ userId: 900012, tenantId: 900001, role: 'usuario' }))
+        .send({ id: '__dupe__', name: 'Dup', token: 't', phoneNumber: '(55 31) 99999-1111' }); // = __t_i1__
+      expect(res.status).toBe(409);
+      expect(res.body.error).toMatch(/reconecte/i);
+      expect(res.body.existingInstanceName).toBe('A');
+    });
+  });
+  it('número de instância cujo dono está DESATIVADO não bloqueia → 201', async () => {
+    await withTx(async (conn) => {
+      await seed(conn);
+      const res = await request(makeApp(conn)).post('/api/instances')
+        .set('Authorization', bearer({ userId: 900011, tenantId: 900001, role: 'usuario' }))
+        .send({ id: '__reuse__', name: 'Reuso', token: 't', phoneNumber: '5531999992222' }); // = __t_i4__ (dono desativado)
+      expect(res.status).toBe(201);
     });
   });
   it('superadmin não pode criar instância (sem cliente para ser dono) → 403', async () => {
@@ -50,7 +81,7 @@ describe('POST /api/instances (dono automático)', () => {
       await seed(conn);
       const res = await request(makeApp(conn)).post('/api/instances')
         .set('Authorization', bearer({ userId: 900088, tenantId: null, role: 'superadmin' }))
-        .send({ id: '__x__', name: 'X', token: 't' });
+        .send({ id: '__x__', name: 'X', token: 't', phoneNumber: '5531999993333' });
       expect(res.status).toBe(403);
     });
   });
@@ -62,7 +93,7 @@ describe('GET /api/instances (visibilidade por dono)', () => {
       await seed(conn);
       const res = await request(makeApp(conn)).get('/api/instances')
         .set('Authorization', bearer({ userId: 900050, tenantId: 900001, role: 'admin' }));
-      expect(res.body.map((i) => i.id).sort()).toEqual(['__t_i1__', '__t_i2__']);
+      expect(res.body.map((i) => i.id).sort()).toEqual(['__t_i1__', '__t_i2__', '__t_i4__']);
     });
   });
   it('usuário vê só a própria, com o token (é o dono)', async () => {

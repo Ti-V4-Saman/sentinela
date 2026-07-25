@@ -234,18 +234,13 @@ export default function App() {
 
   // Create new instance handler
   const handleCreateInstance = async (newInstance) => {
-    try {
-      const created = await createInstanceApi(newInstance);
-      const updatedList = [created, ...instances];
-      setInstances(updatedList);
-      setIsCreateModalOpen(false);
-      showToast(`Instância "${created.name}" criada com sucesso! Token cadastrado no Webhook.`);
-
-      // Open connect modal immediately to scan QR code
-      setConnectingInstance(created);
-    } catch (err) {
-      showToast('Erro ao criar instância no banco de dados.', 'error');
-    }
+    // Erros (ex.: número duplicado → 409) são relançados para o modal exibir inline.
+    const created = await createInstanceApi(newInstance);
+    const updatedList = [created, ...instances];
+    setInstances(updatedList);
+    setIsCreateModalOpen(false);
+    toast.success('Instância criada', `"${created.name}" foi criada. Escaneie o QR para conectar.`);
+    setConnectingInstance(created);
   };
 
 

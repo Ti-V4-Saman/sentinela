@@ -64,12 +64,33 @@ export function createInstancesRouter(pool) {
       if (!id || !name || !token) {
         return res.status(400).json({ error: 'id, name e token são obrigatórios' });
       }
+      // Número obrigatório para criar/conectar instância.
+      const phoneDigits = String(phoneNumber || '').replace(/\D/g, '');
+      if (phoneDigits.length < 10) {
+        return res.status(400).json({ error: 'Informe o número de telefone (com DDD e país) da instância' });
+      }
+      // Não permitir nova instância para um número que já tem instância de um USUÁRIO ATIVO
+      // no mesmo cliente — orienta a reconectar a existente. (Instância de usuário desativado
+      // não bloqueia: o número foi "aposentado" junto com o usuário.)
+      const [existing] = await pool.query(
+        `SELECT si.id, si.name, si.phone_number, u.name AS owner_name
+         FROM sentinela_instances si JOIN users u ON u.id = si.owner_user_id
+         WHERE si.tenant_id = ? AND u.status = 'active'`, [actor.tenant_id]);
+      const conflict = existing.find((r) => String(r.phone_number || '').replace(/\D/g, '') === phoneDigits);
+      if (conflict) {
+        return res.status(409).json({
+          error: `Já existe uma instância ativa para esse número (dono: ${conflict.owner_name}). Reconecte a instância "${conflict.name}" em vez de criar uma nova.`,
+          existingInstanceId: conflict.id,
+          existingInstanceName: conflict.name,
+        });
+      }
+
       await pool.query(
         `INSERT INTO sentinela_instances
          (id, tenant_id, owner_user_id, name, token, status, phone_number, contact_name, avatar_url, webhook_url)
          VALUES (?,?,?,?,?,?,?,?,?,?)`,
         [id, actor.tenant_id, actor.id, name, token, status || 'Disconnected',
-         phoneNumber || null, contactName || null, avatarUrl || null, webhookUrl || null]);
+         phoneDigits, contactName || null, avatarUrl || null, webhookUrl || null]);
       const [rows] = await pool.query('SELECT * FROM sentinela_instances WHERE id = ?', [id]);
       res.status(201).json(formatInstance(rows[0], { includeToken: true }));
     } catch (e) {
