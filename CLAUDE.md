@@ -16,8 +16,9 @@ Isto não é opcional e não tem exceção por tamanho da mudança.
 Ao final, percorra o checklist da seção 9 e reporte-o explicitamente.
 Se um item falhar, corrija antes de entregar — não entregue com ressalva.
 
-Proibições absolutas: cor hardcoded, qualquer tom de azul, recriar do zero
-componente que já existe no design system.
+Proibições absolutas: cor hardcoded, azul/roxo usados como decoração em vez de
+semântica (`info`/`ia`), recriar do zero componente que já existe no design
+system, usar qualquer paleta que não seja a vinho/neutra da seção 3.
 
 ## Convenções gerais
 
