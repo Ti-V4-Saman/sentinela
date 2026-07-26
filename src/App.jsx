@@ -1,6 +1,4 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import Header from './components/Header';
-import InstanceCard from './components/InstanceCard';
 import ConnectModal from './components/ConnectModal';
 import ServerConfigModal from './components/ServerConfigModal';
 import CreateInstanceModal from './components/CreateInstanceModal';
@@ -8,33 +6,23 @@ import {
   fetchInstancesApi,
   createInstanceApi,
   updateInstanceApi,
-  deleteInstanceApi,
   getStoredServerConfig,
   disconnectQuePasaInstance,
   checkInstanceRealtimeStatus,
   purgeFakeInstances,
-  MANDATORY_WEBHOOK_URL
 } from './services/quepasaApi';
 import { getUser, isAdmin as isAdminRole, logout } from './services/authApi';
+import { AppShell } from './components/shell/AppShell';
 import TenantsView from './views/TenantsView';
 import UsersView from './views/UsersView';
 import TeamsView from './views/TeamsView';
 import ConnectionsView from './views/ConnectionsView';
 import MeusDadosModal from './components/MeusDadosModal';
+import { EditTokenDialog } from './components/instances/edit-token-dialog';
 import { useToast } from './components/ui/ToastProvider';
 import { useConfirm } from './components/ui/ConfirmProvider';
 import { friendlyError } from './utils/validation';
 import { homeView } from './utils/nav';
-import {
-  ShieldCheck,
-  CheckCircle2,
-  AlertCircle,
-  Radio,
-  Wifi,
-  Server,
-  Layers,
-  Webhook
-} from 'lucide-react';
 
 export default function App() {
   const currentUser = getUser();
@@ -46,6 +34,8 @@ export default function App() {
 
   const [activeView, setActiveView] = useState(homeView(currentUser?.role));
   const [instances, setInstances] = useState([]);
+  const [instancesLoading, setInstancesLoading] = useState(true);
+  const [instancesError, setInstancesError] = useState('');
   const [serverConfig, setServerConfig] = useState({ serverUrl: '', apiKey: '', useMock: true });
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState('ALL');
@@ -56,6 +46,19 @@ export default function App() {
   const [isServerModalOpen, setIsServerModalOpen] = useState(false);
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
   const [isMeusDadosOpen, setIsMeusDadosOpen] = useState(false);
+  const [editTokenInstance, setEditTokenInstance] = useState(null);
+
+  // Carrega as conexões (com loading/erro para a UI).
+  const loadInstances = React.useCallback(async () => {
+    setInstancesLoading(true); setInstancesError('');
+    try {
+      setInstances(await fetchInstancesApi());
+    } catch (e) {
+      setInstancesError(e.message || 'Falha ao carregar as conexões');
+    } finally {
+      setInstancesLoading(false);
+    }
+  }, []);
 
   // Toast unificado (empilha, auto-dismiss).
   const toast = useToast();
@@ -67,16 +70,9 @@ export default function App() {
   // Initial Load
   useEffect(() => {
     purgeFakeInstances();
-    const config = getStoredServerConfig();
-    setServerConfig(config);
-    
-    // Fetch instances from Backend API
-    const loadInstances = async () => {
-      const loadedInstances = await fetchInstancesApi();
-      setInstances(loadedInstances);
-    };
+    setServerConfig(getStoredServerConfig());
     loadInstances();
-  }, []);
+  }, [loadInstances]);
 
   // Ref to hold latest instances for background polling without stale closures
   const instancesRef = React.useRef(instances);
@@ -155,11 +151,14 @@ export default function App() {
       );
       setInstances(updatedList);
     } else {
-      const refreshed = await fetchInstancesApi();
-      setInstances(refreshed);
+      try {
+        setInstances(await fetchInstancesApi());
+      } catch (e) {
+        toast.error('Não foi possível atualizar', friendlyError(e.message));
+      }
     }
     setIsRefreshing(false);
-    showToast('Status das instâncias sincronizados em tempo real!');
+    showToast('Status das conexões sincronizado!');
   };
 
   // Filtered instances calculation
@@ -246,105 +245,47 @@ export default function App() {
 
 
 
-  // Test Webhook n8n Payload Sender
-  const handleTestWebhookPayload = async (instance) => {
-    try {
-      showToast(`Enviando evento de teste para o n8n...`);
-
-      const samplePayload = {
-        event: 'MESSAGES_UPSERT',
-        instance: instance.name,
-        sender: {
-          phone: instance.phoneNumber || '5531999998888',
-          name: instance.contactName || 'Contato de Teste',
-        },
-        message: {
-          id: `msg-${Date.now()}`,
-          fromMe: false,
-          isGroup: true,
-          groupName: 'Grupo V4 Sales & Ops',
-          type: 'audio',
-          text: '[Áudio recebido no grupo]',
-          audioUrl: 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3',
-          timestamp: new Date().toISOString(),
-        },
-        webhookTarget: MANDATORY_WEBHOOK_URL,
-      };
-
-      // Try sending payload to n8n directly via fetch
-      const res = await fetch(MANDATORY_WEBHOOK_URL, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(samplePayload),
-      }).catch((e) => {
-        console.warn('POST para n8n via CORS prevenido ou falhado, simulação exibida:', e);
-        return { ok: true };
-      });
-
-      showToast(`Payload de mensagem/áudio enviado para n8n! (${MANDATORY_WEBHOOK_URL})`);
-    } catch (err) {
-      showToast(`Teste executado para ${MANDATORY_WEBHOOK_URL}`);
-    }
-  };
-
   // Summary counts
   const totalCount = instances.length;
   const connectedCount = instances.filter((i) => i.status === 'Connected').length;
   const disconnectedCount = totalCount - connectedCount;
 
   return (
-    <div className="min-h-screen bg-dark-bg text-slate-100 flex flex-col font-sans">
-
-      {/* Top Navigation Header */}
-      <Header
-        searchQuery={searchQuery}
-        setSearchQuery={setSearchQuery}
-        statusFilter={statusFilter}
-        setStatusFilter={setStatusFilter}
-        onRefresh={handleRefresh}
-        isRefreshing={isRefreshing}
-        onOpenCreateModal={() => setIsCreateModalOpen(true)}
-        onOpenServerConfig={() => setIsServerModalOpen(true)}
-        serverConfig={serverConfig}
-        canCreate={canCreateInstance}
-        user={currentUser}
-        onLogout={handleLogout}
-        onOpenMeusDados={() => setIsMeusDadosOpen(true)}
-        activeView={activeView}
-        setActiveView={setActiveView}
-      />
-
-      {/* Views de gestão (fora de 'instances') */}
+    <AppShell
+      user={currentUser}
+      activeView={activeView}
+      setActiveView={setActiveView}
+      onOpenMeusDados={() => setIsMeusDadosOpen(true)}
+      onLogout={handleLogout}
+      onHome={() => setActiveView(homeView(currentUser?.role))}
+    >
+      {activeView === 'instances' && (
+        <ConnectionsView
+          instances={filteredInstances}
+          rawCount={instances.length}
+          counts={{ total: totalCount, connected: connectedCount, disconnected: disconnectedCount }}
+          searchQuery={searchQuery}
+          setSearchQuery={setSearchQuery}
+          statusFilter={statusFilter}
+          setStatusFilter={setStatusFilter}
+          onConnect={handleStartConnect}
+          onDisconnect={handleDisconnect}
+          onEditToken={(inst) => setEditTokenInstance(inst)}
+          canManage={(inst) => admin || inst.ownerUserId === myId}
+          canCreate={canCreateInstance}
+          onCreate={() => setIsCreateModalOpen(true)}
+          onRefresh={handleRefresh}
+          isRefreshing={isRefreshing}
+          loading={instancesLoading}
+          error={instancesError}
+          onRetry={loadInstances}
+        />
+      )}
       {activeView === 'tenants' && <TenantsView />}
       {activeView === 'users' && <UsersView />}
       {activeView === 'teams' && <TeamsView />}
 
-      {/* Main Content Area (view de instâncias) */}
-      {activeView === 'instances' && (
-      <main className="flex-1 max-w-7xl w-full mx-auto px-4 lg:px-8 py-8">
-        <div className="mb-6">
-          <h2 className="font-heading text-2xl font-semibold text-foreground">Gestão de Conexões</h2>
-          <p className="text-sm text-muted-foreground mt-0.5">Monitore os números de WhatsApp conectados</p>
-        </div>
-        <ConnectionsView
-          instances={filteredInstances}
-          counts={{ total: totalCount, connected: connectedCount, disconnected: disconnectedCount }}
-          onConnect={handleStartConnect}
-          onDisconnect={handleDisconnect}
-          canManage={(inst) => admin || inst.ownerUserId === myId}
-        />
-      </main>
-      )}
-
-      {/* Footer */}
-      <footer className="border-t border-dark-border/60 py-4 px-4 text-center text-xs text-slate-500 bg-dark-bg">
-        <div className="max-w-7xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-2">
-          <span className="font-mono text-[11px]">Sentinela WhatsApp</span>
-          <span>Qualidade & Performance V4 Saman © 2026</span>
-        </div>
-      </footer>
-
-      {/* Modals */}
+      {/* Modais */}
       {connectingInstance && (
         <ConnectModal
           instance={connectingInstance}
@@ -352,29 +293,26 @@ export default function App() {
           onConnectedSuccess={handleConnectionSuccess}
         />
       )}
-
       {isServerModalOpen && (
         <ServerConfigModal
           config={serverConfig}
           onClose={() => setIsServerModalOpen(false)}
-          onSave={(newConfig) => {
-            setServerConfig(newConfig);
-            showToast('Configurações do Servidor atualizadas!');
-          }}
+          onSave={(newConfig) => { setServerConfig(newConfig); showToast('Configurações do servidor atualizadas!'); }}
         />
       )}
-
       {isCreateModalOpen && (
-        <CreateInstanceModal
-          onClose={() => setIsCreateModalOpen(false)}
-          onCreate={handleCreateInstance}
-        />
+        <CreateInstanceModal onClose={() => setIsCreateModalOpen(false)} onCreate={handleCreateInstance} />
       )}
-
       {isMeusDadosOpen && (
         <MeusDadosModal onClose={() => setIsMeusDadosOpen(false)} />
       )}
-
-    </div>
+      {editTokenInstance && (
+        <EditTokenDialog
+          instance={editTokenInstance}
+          onClose={() => setEditTokenInstance(null)}
+          onSave={handleUpdateToken}
+        />
+      )}
+    </AppShell>
   );
 }

@@ -134,22 +134,22 @@
 }
 
 /* --------------------------------------------------------------------------
-   Base legada (telas atuais permanecem dark até serem portadas). Será
-   substituída por tokens quando o app for migrado tela a tela.
+   Base — via tokens (tema light padrão; dark por token com .dark).
    -------------------------------------------------------------------------- */
 @layer base {
+  * { border-color: var(--border); }
   body {
-    background-color: #06110f;
-    color: #e2e8f0;
-    font-family: 'Inter', sans-serif;
+    background-color: var(--background);
+    color: var(--foreground);
+    font-family: var(--font-sans);
   }
 }
 
-/* Custom Scrollbar (legado) */
+/* Scrollbar via tokens */
 ::-webkit-scrollbar { width: 8px; height: 8px; }
-::-webkit-scrollbar-track { background: #06110f; }
-::-webkit-scrollbar-thumb { background: #1a3a33; border-radius: 4px; }
-::-webkit-scrollbar-thumb:hover { background: #00c885; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 9999px; }
+::-webkit-scrollbar-thumb:hover { background: var(--muted-foreground); }
 
 /* Pulse Animation for Connected Status (legado) */
 @keyframes pulse-emerald {

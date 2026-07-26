@@ -1,6 +1,9 @@
 import React, { useState } from 'react';
 import { ShieldCheck, LogIn, AlertCircle, Loader2 } from 'lucide-react';
 import { login } from '../services/authApi';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Field } from '@/components/field';
 
 export default function LoginScreen({ onSuccess }) {
   const [email, setEmail] = useState('');
@@ -23,62 +26,60 @@ export default function LoginScreen({ onSuccess }) {
   };
 
   return (
-    <div className="min-h-screen bg-dark-bg text-slate-100 flex items-center justify-center px-4 font-sans">
+    <div className="flex min-h-screen items-center justify-center bg-background px-4">
       <div className="w-full max-w-sm">
-        <div className="flex flex-col items-center mb-8">
-          <div className="w-14 h-14 rounded-2xl bg-brand-emerald/10 border border-brand-emerald/30 flex items-center justify-center text-brand-emerald mb-3">
-            <ShieldCheck className="w-7 h-7" />
+        <div className="mb-8 flex flex-col items-center">
+          <div className="mb-3 flex h-14 w-14 items-center justify-center rounded-lg bg-primary text-primary-foreground">
+            <ShieldCheck className="h-7 w-7" />
           </div>
-          <h1 className="text-xl font-bold font-outfit text-white">Sentinela</h1>
-          <p className="text-xs text-slate-400 mt-1">Monitoramento de conversas WhatsApp</p>
+          <h1 className="font-heading text-xl font-semibold text-foreground">Sentinela</h1>
+          <p className="mt-1 text-xs text-muted-foreground">Monitoramento de conversas WhatsApp</p>
         </div>
 
-        <form onSubmit={handleSubmit} className="bg-dark-card border border-dark-border rounded-2xl p-6 space-y-4">
+        <form
+          onSubmit={handleSubmit}
+          className="space-y-4 rounded-lg border border-border bg-card p-6 shadow-[var(--shadow-card)]"
+          noValidate
+        >
           {error && (
-            <div className="flex items-center gap-2 text-xs bg-rose-950 border border-rose-800 text-rose-200 rounded-lg px-3 py-2">
-              <AlertCircle className="w-4 h-4 shrink-0" />
+            <div className="flex items-center gap-2 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+              <AlertCircle className="h-4 w-4 shrink-0" />
               <span>{error}</span>
             </div>
           )}
 
-          <div>
-            <label className="block text-xs font-medium text-slate-300 mb-1.5">E-mail</label>
-            <input
+          <Field label="E-mail" htmlFor="login-email" required>
+            <Input
+              id="login-email"
               type="email"
               autoComplete="username"
               required
               value={email}
               onChange={(e) => setEmail(e.target.value)}
-              className="w-full bg-dark-bg border border-dark-border rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-brand-emerald/60"
               placeholder="voce@empresa.com"
             />
-          </div>
+          </Field>
 
-          <div>
-            <label className="block text-xs font-medium text-slate-300 mb-1.5">Senha</label>
-            <input
+          <Field label="Senha" htmlFor="login-password" required>
+            <Input
+              id="login-password"
               type="password"
               autoComplete="current-password"
               required
               value={password}
               onChange={(e) => setPassword(e.target.value)}
-              className="w-full bg-dark-bg border border-dark-border rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-brand-emerald/60"
               placeholder="••••••••"
             />
-          </div>
+          </Field>
 
-          <button
-            type="submit"
-            disabled={loading}
-            className="w-full flex items-center justify-center gap-2 px-4 py-2.5 text-sm font-semibold bg-brand-emerald hover:bg-brand-emeraldDark text-black rounded-lg transition-all disabled:opacity-60 disabled:cursor-not-allowed"
-          >
-            {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <LogIn className="w-4 h-4" />}
+          <Button type="submit" disabled={loading} className="w-full">
+            {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <LogIn className="h-4 w-4" />}
             {loading ? 'Entrando...' : 'Entrar'}
-          </button>
+          </Button>
         </form>
 
-        <p className="text-center text-[11px] text-slate-500 mt-6">
-          Acesso restrito · Qualidade &amp; Performance V4 Saman
+        <p className="mt-6 text-center text-[11px] text-muted-foreground">
+          Acesso restrito &middot; Qualidade &amp; Performance V4 Saman
         </p>
       </div>
     </div>
