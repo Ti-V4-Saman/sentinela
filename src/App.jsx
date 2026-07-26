@@ -19,6 +19,7 @@ import { getUser, isAdmin as isAdminRole, logout } from './services/authApi';
 import TenantsView from './views/TenantsView';
 import UsersView from './views/UsersView';
 import TeamsView from './views/TeamsView';
+import ConnectionsView from './views/ConnectionsView';
 import MeusDadosModal from './components/MeusDadosModal';
 import { useToast } from './components/ui/ToastProvider';
 import { useConfirm } from './components/ui/ConfirmProvider';
@@ -321,82 +322,17 @@ export default function App() {
       {/* Main Content Area (view de instâncias) */}
       {activeView === 'instances' && (
       <main className="flex-1 max-w-7xl w-full mx-auto px-4 lg:px-8 py-8">
-
-        {/* Section Header & Counters */}
-        <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 mb-6">
-          <div>
-            <div className="flex items-center gap-3">
-              <h2 className="text-2xl font-bold font-outfit text-white">
-                Instâncias
-              </h2>
-              <span className="px-2.5 py-0.5 rounded-full text-xs font-mono bg-dark-surface border border-dark-border text-slate-300">
-                {totalCount} total
-              </span>
-            </div>
-            <p className="text-xs text-slate-400 mt-1">
-              Gerencie suas conexões WhatsApp
-            </p>
-          </div>
-
-          {/* Counters Pill Summary */}
-          <div className="flex items-center gap-2 bg-dark-card border border-dark-border px-3 py-1.5 rounded-xl text-xs">
-            <span className="flex items-center gap-1.5 text-brand-emerald font-semibold">
-              <span className="w-2 h-2 rounded-full bg-brand-emerald" />
-              {connectedCount} Conectados
-            </span>
-            <span className="text-slate-600">|</span>
-            <span className="flex items-center gap-1.5 text-rose-400 font-semibold">
-              <span className="w-2 h-2 rounded-full bg-rose-500" />
-              {disconnectedCount} Desconectados
-            </span>
-          </div>
+        <div className="mb-6">
+          <h2 className="font-heading text-2xl font-semibold text-foreground">Gestão de Conexões</h2>
+          <p className="text-sm text-muted-foreground mt-0.5">Monitore os números de WhatsApp conectados</p>
         </div>
-
-        {/* Instances Grid */}
-        {filteredInstances.length > 0 ? (
-          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-6">
-            {filteredInstances.map((instance) => (
-              <InstanceCard
-                key={instance.id}
-                instance={instance}
-                onConnect={handleStartConnect}
-                onDisconnect={handleDisconnect}
-                onUpdateToken={handleUpdateToken}
-                canManage={admin || instance.ownerUserId === myId}
-              />
-
-            ))}
-          </div>
-        ) : (
-          /* Empty state */
-          <div className="bg-dark-card border border-dark-border rounded-2xl p-12 text-center flex flex-col items-center justify-center">
-            <div className="w-16 h-16 rounded-full bg-dark-bg border border-dark-border flex items-center justify-center text-slate-500 mb-4">
-              <Layers className="w-8 h-8" />
-            </div>
-            <h3 className="text-lg font-bold text-white mb-1">Nenhuma instância encontrada</h3>
-            <p className="text-xs text-slate-400 max-w-sm mb-6">
-              {searchQuery || statusFilter !== 'ALL'
-                ? 'Nenhuma conexão bate com os filtros atuais. Tente limpar a busca.'
-                : 'Você ainda não possui instâncias de WhatsApp criadas. Clique em "Instance +" para criar a primeira!'}
-            </p>
-            {searchQuery || statusFilter !== 'ALL' ? (
-              <button
-                onClick={() => { setSearchQuery(''); setStatusFilter('ALL'); }}
-                className="px-4 py-2 text-xs font-semibold bg-dark-hover border border-dark-border rounded-lg text-slate-200"
-              >
-                Limpar Filtros
-              </button>
-            ) : canCreateInstance ? (
-              <button
-                onClick={() => setIsCreateModalOpen(true)}
-                className="px-5 py-2.5 text-xs font-semibold bg-brand-emerald hover:bg-brand-emeraldDark text-black rounded-lg transition-all shadow-md shadow-brand-emerald/20"
-              >
-                Instance +
-              </button>
-            ) : null}
-          </div>
-        )}
-
+        <ConnectionsView
+          instances={filteredInstances}
+          counts={{ total: totalCount, connected: connectedCount, disconnected: disconnectedCount }}
+          onConnect={handleStartConnect}
+          onDisconnect={handleDisconnect}
+          canManage={(inst) => admin || inst.ownerUserId === myId}
+        />
       </main>
       )}
 
