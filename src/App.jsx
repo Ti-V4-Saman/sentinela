@@ -13,7 +13,7 @@ import {
 } from './services/quepasaApi';
 import { getUser, isAdmin as isAdminRole, logout } from './services/authApi';
 import { AppShell } from './components/shell/AppShell';
-import TenantsView from './views/TenantsView';
+import ClientsView from './views/ClientsView';
 import UsersView from './views/UsersView';
 import TeamsView from './views/TeamsView';
 import ConnectionsView from './views/ConnectionsView';
@@ -281,7 +281,7 @@ export default function App() {
           onRetry={loadInstances}
         />
       )}
-      {activeView === 'tenants' && <TenantsView />}
+      {activeView === 'tenants' && <ClientsView />}
       {activeView === 'users' && <UsersView />}
       {activeView === 'teams' && <TeamsView />}
 
