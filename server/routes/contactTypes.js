@@ -1,6 +1,7 @@
 import express from 'express';
 import { requireActor } from '../middleware/actor.js';
 import { withTransaction } from '../tx.js';
+import { writeAudit, clientIp } from '../audit.js';
 
 // Tons semânticos permitidos = tones do StatusBadge (mapeados a tokens no front, nunca cor hardcoded).
 export const VALID_COLORS = ['neutral', 'info', 'ia', 'success', 'warning', 'alert', 'destructive'];
@@ -72,6 +73,7 @@ export function createContactTypesRouter(pool) {
       const [r] = await pool.query(
         'INSERT INTO contact_types (tenant_id, name, color) VALUES (?, ?, ?)', [tgt.tenantId, name.trim(), col.color]);
       const [rows] = await pool.query('SELECT * FROM contact_types WHERE id = ?', [r.insertId]);
+      writeAudit(pool, { tenantId: tgt.tenantId, actor: req.actor, action: 'create_contact_type', resource: 'contact_type', resourceId: r.insertId, ip: clientIp(req) });
       res.status(201).json(formatType(rows[0]));
     } catch (e) {
       if (e.code === 'ER_DUP_ENTRY') return res.status(409).json({ error: 'Já existe um tipo com esse nome no cliente' });
@@ -90,6 +92,7 @@ export function createContactTypesRouter(pool) {
       if (!t) return res.status(404).json({ error: 'Tipo não encontrado' });
       await pool.query('UPDATE contact_types SET name = ?, color = ? WHERE id = ?', [name.trim(), col.color, t.id]);
       const [rows] = await pool.query('SELECT * FROM contact_types WHERE id = ?', [t.id]);
+      writeAudit(pool, { tenantId: t.tenant_id, actor: req.actor, action: 'update_contact_type', resource: 'contact_type', resourceId: t.id, ip: clientIp(req) });
       res.json(formatType(rows[0]));
     } catch (e) {
       if (e.code === 'ER_DUP_ENTRY') return res.status(409).json({ error: 'Já existe um tipo com esse nome no cliente' });
@@ -112,9 +115,10 @@ export function createContactTypesRouter(pool) {
         }
         await conn.query('UPDATE contacts SET contact_type_id = NULL WHERE tenant_id = ? AND contact_type_id = ?', [t.tenant_id, t.id]);
         await conn.query('DELETE FROM contact_types WHERE id = ?', [t.id]);
-        return { status: 200 };
+        return { status: 200, tenantId: t.tenant_id };
       });
       if (out.status === 404) return res.status(404).json({ error: 'Tipo não encontrado' });
+      writeAudit(pool, { tenantId: out.tenantId, actor: req.actor, action: 'delete_contact_type', resource: 'contact_type', resourceId: req.params.id, ip: clientIp(req) });
       res.json({ success: true, message: 'Tipo removido' });
     } catch (e) {
       console.error('delete contact type:', e);

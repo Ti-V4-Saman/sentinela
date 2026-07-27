@@ -1,6 +1,7 @@
 import express from 'express';
 import { requireActor } from '../middleware/actor.js';
 import { hashPassword } from '../auth/password.js';
+import { writeAudit, clientIp } from '../audit.js';
 
 const ROLES = ['superadmin', 'admin', 'gestor', 'usuario'];
 const VALID_STATUS = ['active', 'disabled'];
@@ -162,6 +163,7 @@ export function createUsersRouter(pool) {
         return res.status(404).json({ error: 'Instância não encontrada no cliente do usuário' });
       }
       await pool.query('INSERT INTO user_instances (user_id, instance_id) VALUES (?, ?)', [target.id, instanceId]);
+      writeAudit(pool, { tenantId: target.tenant_id, actor: req.actor, action: 'link_user_instance', resource: 'user_instance', resourceId: `${target.id}:${instanceId}`, ip: clientIp(req) });
       res.status(201).json({ success: true, userId: Number(target.id), instanceId });
     } catch (e) {
       if (e.code === 'ER_DUP_ENTRY') return res.status(409).json({ error: 'Instância já vinculada ao usuário' });
@@ -178,6 +180,7 @@ export function createUsersRouter(pool) {
       const [r] = await pool.query('DELETE FROM user_instances WHERE user_id = ? AND instance_id = ?',
         [target.id, req.params.instanceId]);
       if (r.affectedRows === 0) return res.status(404).json({ error: 'Vínculo não encontrado' });
+      writeAudit(pool, { tenantId: target.tenant_id, actor: req.actor, action: 'unlink_user_instance', resource: 'user_instance', resourceId: `${target.id}:${req.params.instanceId}`, ip: clientIp(req) });
       res.json({ success: true, message: 'Instância desvinculada' });
     } catch (e) {
       console.error('unlink user instance:', e);

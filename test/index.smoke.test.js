@@ -11,7 +11,12 @@ describe('app wiring', () => {
     await applyMigrations();
     app = createApp(getPool());
   });
-  afterAll(() => getPool().end());
+  afterAll(async () => {
+    // O login de teste (email inexistente) é auditado como login_failed via pool real (commit) —
+    // remove o resíduo para manter access_logs limpo.
+    await getPool().query("DELETE FROM access_logs WHERE action = 'login_failed' AND actor_user_id IS NULL AND tenant_id IS NULL");
+    await getPool().end();
+  });
 
   it('login é público, instances exige auth', async () => {
     const login = await request(app).post('/api/auth/login').send({ email: 'x', password: 'y' });

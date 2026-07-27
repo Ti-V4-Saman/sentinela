@@ -2,6 +2,7 @@ import * as React from 'react';
 import {
   ShieldCheck, Radio, Building2, Users, UsersRound,
   Settings, LogOut, Sun, Moon, ChevronsUpDown, Server, MessageSquare, MessagesSquare, Contact,
+  LayoutDashboard, BarChart3, ScrollText,
 } from 'lucide-react';
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem,
@@ -11,7 +12,7 @@ import { cn } from '@/lib/utils';
 import { getTheme, toggleTheme, type Theme } from '@/utils/theme';
 
 type Role = 'superadmin' | 'admin' | 'gestor' | 'usuario';
-type NavKey = 'conversations' | 'groups' | 'contacts' | 'instances' | 'tenants' | 'users' | 'teams';
+type NavKey = 'dashboard' | 'conversations' | 'groups' | 'contacts' | 'instances' | 'tenants' | 'users' | 'teams' | 'reports' | 'audit';
 
 const ROLE_LABELS: Record<string, string> = {
   superadmin: 'Superadmin', admin: 'Administrador', gestor: 'Gestor', usuario: 'Usuário',
@@ -19,6 +20,7 @@ const ROLE_LABELS: Record<string, string> = {
 
 const ALL: Role[] = ['superadmin', 'admin', 'gestor', 'usuario'];
 const NAV: { key: NavKey; label: string; icon: React.ComponentType<{ className?: string }>; roles: Role[] }[] = [
+  { key: 'dashboard', label: 'Painel', icon: LayoutDashboard, roles: ['superadmin', 'admin'] },
   { key: 'conversations', label: 'Conversas', icon: MessageSquare, roles: ALL },
   { key: 'groups', label: 'Grupos', icon: MessagesSquare, roles: ALL },
   { key: 'contacts', label: 'Contatos', icon: Contact, roles: ['superadmin', 'admin'] },
@@ -26,6 +28,8 @@ const NAV: { key: NavKey; label: string; icon: React.ComponentType<{ className?:
   { key: 'tenants', label: 'Clientes', icon: Building2, roles: ['superadmin'] },
   { key: 'users', label: 'Usuários', icon: Users, roles: ['superadmin', 'admin'] },
   { key: 'teams', label: 'Equipes', icon: UsersRound, roles: ['superadmin', 'admin'] },
+  { key: 'reports', label: 'Relatórios', icon: BarChart3, roles: ['superadmin', 'admin'] },
+  { key: 'audit', label: 'Auditoria', icon: ScrollText, roles: ['superadmin', 'admin'] },
 ];
 
 export function Sidebar({

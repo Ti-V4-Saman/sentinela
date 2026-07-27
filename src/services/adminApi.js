@@ -76,6 +76,26 @@ export const listClientUsers = (id, params) => req(`/api/clients/${id}/users${qs
 export const listClientTeams = (id, params) => req(`/api/clients/${id}/teams${qs(params)}`);
 export const listClientContacts = (id, params) => req(`/api/clients/${id}/contacts${qs(params)}`);
 
+// ---- Relatórios / dashboard (admin/superadmin) ----
+export const reportSummary = (params) => req(`/api/reports/summary${qs(params)}`);
+export const reportDaily = (params) => req(`/api/reports/daily${qs(params)}`);
+export const reportByInstance = (params) => req(`/api/reports/by-instance${qs(params)}`);
+export const reportByTeam = (params) => req(`/api/reports/by-team${qs(params)}`);
+export const reportMediaTypes = (params) => req(`/api/reports/media-types${qs(params)}`);
+// URL de download do CSV (o browser navega/baixa; o JWT vai no header via fetch abaixo).
+export async function downloadReportCsv(params) {
+  const res = await fetch(`/api/reports/export${qs(params)}`, { headers: getAuthHeaders() });
+  if (res.status === 401) { handleUnauthorized(); throw new Error('Sessão expirada'); }
+  if (!res.ok) { const t = await res.text(); throw new Error(t || `Erro ${res.status}`); }
+  const blob = await res.blob();
+  const cd = res.headers.get('Content-Disposition') || '';
+  const m = /filename="([^"]+)"/.exec(cd);
+  return { blob, filename: m ? m[1] : 'relatorio.csv' };
+}
+
+// ---- Auditoria (admin/superadmin) ----
+export const listAudit = (params) => req(`/api/audit${qs(params)}`);
+
 // ---- instâncias (gestão) + ponte capture_wid ----
 export const listInstances = () => req('/api/instances');
 export const captureWidCandidates = (instanceId) => req(`/api/instances/${instanceId}/capture-candidates`);

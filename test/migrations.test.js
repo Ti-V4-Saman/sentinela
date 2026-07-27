@@ -4,6 +4,7 @@ import knexConfig from '../knexfile.cjs';
 import bridge from '../migrations/20260727120000_add_capture_wid_bridge.cjs';
 import fulltext from '../migrations/20260727130000_fulltext_messages_text.cjs';
 import contactIdent from '../migrations/20260728120000_contact_identification.cjs';
+import accessLogs from '../migrations/20260729120000_access_logs.cjs';
 
 let knex;
 beforeAll(async () => { knex = knexFactory(knexConfig.development); await knex.migrate.latest(); });
@@ -114,6 +115,21 @@ describe('migration identificação — validadores defensivos', () => {
     it('enum com valores diferentes → incompatível', () => {
       expect(validateColumn({ COLUMN_TYPE: "enum('manual','auto','x')", IS_NULLABLE: 'YES' }, { type: "enum('manual','auto')", nullable: true }).ok).toBe(false);
     });
+  });
+});
+
+// ---- Validadores da migration access_logs (Fase 6) ----
+describe('migration access_logs — validadores defensivos', () => {
+  const { validateForeignKey, validateColumn } = accessLogs._helpers;
+  it('FK tenant CASCADE correta → ok; regra errada → incompatível', () => {
+    const spec = { columns: ['tenant_id'], referencedTable: 'tenants', referencedColumns: ['id'], onDelete: 'CASCADE', onUpdate: 'RESTRICT' };
+    const good = [{ COLUMN_NAME: 'tenant_id', ORDINAL_POSITION: 1, REFERENCED_TABLE_NAME: 'tenants', REFERENCED_COLUMN_NAME: 'id', DELETE_RULE: 'CASCADE', UPDATE_RULE: 'RESTRICT' }];
+    expect(validateForeignKey(good, spec)).toEqual({ exists: true, ok: true });
+    expect(validateForeignKey(good.map((r) => ({ ...r, DELETE_RULE: 'SET NULL' })), spec).ok).toBe(false);
+  });
+  it('coluna action NOT NULL varchar(48) correta; nulabilidade errada → incompatível', () => {
+    expect(validateColumn({ COLUMN_TYPE: 'varchar(48)', IS_NULLABLE: 'NO' }, { type: 'varchar(48)', nullable: false }).ok).toBe(true);
+    expect(validateColumn({ COLUMN_TYPE: 'varchar(48)', IS_NULLABLE: 'YES' }, { type: 'varchar(48)', nullable: false }).ok).toBe(false);
   });
 });
 

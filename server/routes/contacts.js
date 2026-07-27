@@ -1,6 +1,7 @@
 import express from 'express';
 import { requireActor } from '../middleware/actor.js';
 import { withTransaction } from '../tx.js';
+import { writeAudit, clientIp } from '../audit.js';
 
 const MAX_LIMIT = 100;
 const DEFAULT_LIMIT = 20;
@@ -186,9 +187,13 @@ export function createContactsRouter(pool) {
            LEFT JOIN users lu ON lu.id = c.linked_user_id
            LEFT JOIN users ib ON ib.id = c.identified_by_user_id
            WHERE c.tenant_id = ? AND c.id = ?`, [c.tenant_id, c.id]);
-        return { status: 200, contact: formatContact(rows[0], req.actor.role === 'superadmin'), propagated };
+        return { status: 200, tenantId: c.tenant_id, contact: formatContact(rows[0], req.actor.role === 'superadmin'), propagated };
       });
       if (out.error) return res.status(out.status).json({ error: out.error });
+      writeAudit(pool, {
+        tenantId: out.tenantId, actor: req.actor, action: 'identify_contact', resource: 'contact',
+        resourceId: req.params.id, ip: clientIp(req), metadata: { propagated: out.propagated },
+      });
       res.json({ contact: out.contact, propagated: out.propagated });
     } catch (e) {
       console.error('identify contact:', e);
@@ -207,6 +212,10 @@ export function createContactsRouter(pool) {
         `UPDATE contacts SET display_name = NULL, contact_type_id = NULL, linked_user_id = NULL,
                 identification_source = NULL, identified_by_user_id = NULL, identified_at = NULL
          WHERE tenant_id = ? AND id = ?`, [c.tenant_id, c.id]);
+      writeAudit(pool, {
+        tenantId: c.tenant_id, actor: req.actor, action: 'clear_identification', resource: 'contact',
+        resourceId: c.id, ip: clientIp(req),
+      });
       res.json({ success: true, message: 'Identificação removida' });
     } catch (e) {
       console.error('clear contact identification:', e);

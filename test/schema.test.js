@@ -159,3 +159,20 @@ describe('identificação de contatos (Fase 4)', () => {
     expect(rows.every((r) => r.REFERENCED_TABLE_NAME === 'contact_types')).toBe(true);
   });
 });
+
+describe('auditoria — access_logs (Fase 6)', () => {
+  it('access_logs existe com colunas e índices esperados', async () => {
+    expect(await tableExists('access_logs')).toBe(true);
+    expect(await colNames('access_logs')).toEqual(expect.arrayContaining(
+      ['id', 'tenant_id', 'actor_user_id', 'actor_role', 'action', 'resource', 'resource_id', 'status', 'ip', 'metadata', 'created_at']));
+    expect(await indexExists('access_logs', 'idx_alog_tenant_created')).toBe(true);
+  });
+  it('FKs: tenant CASCADE e ator SET NULL', async () => {
+    const [rows] = await pool.query(
+      `SELECT rc.CONSTRAINT_NAME n, rc.DELETE_RULE d FROM information_schema.REFERENTIAL_CONSTRAINTS rc
+       WHERE rc.CONSTRAINT_SCHEMA=DATABASE() AND rc.TABLE_NAME='access_logs'`);
+    const byName = Object.fromEntries(rows.map((r) => [r.n, r.d]));
+    expect(byName.fk_alog_tenant).toBe('CASCADE');
+    expect(byName.fk_alog_actor).toBe('SET NULL');
+  });
+});
