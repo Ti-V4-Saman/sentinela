@@ -564,3 +564,186 @@ describe('GET /api/chats/:id/messages — chat_id ambíguo entre tenants (item 5
     });
   });
 });
+
+// ---- keyword escopado pelos wid visíveis (não vaza por instância não autorizada) ----
+// CHX é a MESMA conversa com mensagens em DUAS instâncias do mesmo tenant:
+//   WA (autorizada a 900011) contém "xy"  |  WB (NÃO autorizada a 900011) contém "zw".
+// CHW só tem WC ("xy"); CHT2 é de outro tenant (WD, "zw"). Termos de 2 chars → caminho LIKE
+// (funciona em linhas não-commitadas). user_instances: 900011→iA. gestor 900040 gere Eq1(WA)+Eq2(WB).
+async function seedKw(conn) {
+  await conn.query("INSERT INTO tenants (id,name) VALUES (900001,'T1'),(900002,'T2')");
+  await conn.query(`INSERT INTO users (id,tenant_id,name,email,password_hash,role,status) VALUES
+    (900050,900001,'Admin','a@__test__','x','admin','active'),
+    (900040,900001,'Gestor','g@__test__','x','gestor','active'),
+    (900011,900001,'U1','u1@__test__','x','usuario','active'),
+    (900012,900001,'U2','u2@__test__','x','usuario','active')`);
+  await conn.query(`INSERT INTO instances (wid,tenant_id) VALUES
+    ('WA',900001),('WB',900001),('WC',900001),('WD',900002)`);
+  await conn.query(`INSERT INTO sentinela_instances (id,tenant_id,owner_user_id,name,token,capture_wid) VALUES
+    ('__iA__',900001,900011,'A','ta','WA'),
+    ('__iB__',900001,900050,'B','tb','WB'),
+    ('__iC__',900001,900050,'C','tc','WC'),
+    ('__iD__',900002,900050,'D','td','WD')`);
+  await conn.query("INSERT INTO user_instances (user_id,instance_id) VALUES (900011,'__iA__')");
+  await conn.query("INSERT INTO teams (id,tenant_id,name) VALUES (900100,900001,'Eq1'),(900101,900001,'Eq2')");
+  await conn.query("INSERT INTO team_managers (team_id,user_id) VALUES (900100,900040),(900101,900040)");
+  await conn.query("INSERT INTO team_instances (team_id,instance_id) VALUES (900100,'__iA__'),(900101,'__iB__')");
+  await conn.query(`INSERT INTO contacts (id,tenant_id,phone,name) VALUES
+    ('C1',900001,'5531900000001','Alice'),('C2',900001,'5531900000002','Bob'),('C9',900002,'5531900000009','Zara')`);
+  await conn.query(`INSERT INTO chats (id,tenant_id,title,is_group) VALUES
+    ('CHX',900001,'Alice',0),('CHW',900001,'Bob',0),('CHT2',900002,'Zara',0)`);
+  await conn.query(`INSERT INTO messages (id,tenant_id,chat_id,contact_id,text,type,from_me,from_internal,timestamp,wid) VALUES
+    ('kA',900001,'CHX','C1','xy alpha','text',0,0,'2026-07-01 10:00:00','WA'),
+    ('kB',900001,'CHX','C1','zw beta','text',0,0,'2026-07-01 10:05:00','WB'),
+    ('kW',900001,'CHW','C2','xy gamma','text',0,0,'2026-07-01 09:00:00','WC'),
+    ('kT',900002,'CHT2','C9','zw delta','text',0,0,'2026-07-01 08:00:00','WD')`);
+}
+
+describe('GET /api/chats?keyword — escopo por wid visível (bloqueia vazamento por instância)', () => {
+  it('1-4. keyword só na instância NÃO autorizada (WB) → usuário NÃO vê a conversa', async () => {
+    await withTx(async (c) => {
+      await seedKw(c); const app = makeApp(c);
+      const r = await request(app).get('/api/chats?keyword=zw').set('Authorization', bearer(USER1));
+      expect(r.status).toBe(200);
+      expect(chatIds(r.body)).toEqual([]); // "zw" só existe em WB (não vinculada a 900011)
+    });
+  });
+  it('5. keyword na instância autorizada (WA) → usuário vê a conversa', async () => {
+    await withTx(async (c) => {
+      await seedKw(c); const app = makeApp(c);
+      const r = await request(app).get('/api/chats?keyword=xy').set('Authorization', bearer(USER1));
+      expect(chatIds(r.body)).toEqual(['CHX']); // "xy" existe em WA
+    });
+  });
+  it('6. admin pesquisa em TODAS as instâncias do próprio tenant (acha via WB), sem vazar t2', async () => {
+    await withTx(async (c) => {
+      await seedKw(c); const app = makeApp(c);
+      const r = await request(app).get('/api/chats?keyword=zw').set('Authorization', bearer(ADMIN));
+      expect(chatIds(r.body)).toEqual(['CHX']); // via WB (mesmo tenant); CHT2 (t2) NÃO aparece
+    });
+  });
+  it('7. gestor respeita interseção com team_id (WA): zw some, xy aparece', async () => {
+    await withTx(async (c) => {
+      await seedKw(c); const app = makeApp(c);
+      const zwEq1 = await request(app).get('/api/chats?keyword=zw&team_id=900100').set('Authorization', bearer(GESTOR));
+      expect(chatIds(zwEq1.body)).toEqual([]); // team 900100 → WA; "zw" não está em WA
+      const xyEq1 = await request(app).get('/api/chats?keyword=xy&team_id=900100').set('Authorization', bearer(GESTOR));
+      expect(chatIds(xyEq1.body)).toEqual(['CHX']);
+    });
+  });
+  it('7b. gestor sem team_id acha via WB (escopo base {WA,WB})', async () => {
+    await withTx(async (c) => {
+      await seedKw(c); const app = makeApp(c);
+      const r = await request(app).get('/api/chats?keyword=zw').set('Authorization', bearer(GESTOR));
+      expect(chatIds(r.body)).toEqual(['CHX']); // "zw" em WB, visível ao gestor via Eq2
+    });
+  });
+  it('8. combinado keyword + instance_id restringe ao wid da instância', async () => {
+    await withTx(async (c) => {
+      await seedKw(c); const app = makeApp(c);
+      const todos = await request(app).get('/api/chats?keyword=xy').set('Authorization', bearer(ADMIN));
+      expect(chatIds(todos.body)).toEqual(['CHW', 'CHX']); // xy em WA (CHX) e WC (CHW)
+      const soIA = await request(app).get('/api/chats?keyword=xy&instance_id=__iA__').set('Authorization', bearer(ADMIN));
+      expect(chatIds(soIA.body)).toEqual(['CHX']); // WA apenas → CHW (WC) excluída
+    });
+  });
+  it('9. combinado keyword + user_id restringe às instâncias do usuário', async () => {
+    await withTx(async (c) => {
+      await seedKw(c); const app = makeApp(c);
+      const r = await request(app).get('/api/chats?keyword=xy&user_id=900011').set('Authorization', bearer(ADMIN));
+      expect(chatIds(r.body)).toEqual(['CHX']); // 900011 → iA (WA); CHW (WC) excluída
+    });
+  });
+  it('10. escopo vazio (usuário sem instâncias) → nenhum resultado mesmo com keyword', async () => {
+    await withTx(async (c) => {
+      await seedKw(c); const app = makeApp(c);
+      const r = await request(app).get('/api/chats?keyword=xy').set('Authorization', bearer(USER2));
+      expect(r.body).toEqual({ page: 1, limit: 20, total: 0, chats: [] });
+    });
+  });
+});
+
+// ---- paginação da thread: página 1 = mais recentes; ordem cronológica; sem sobreposição ----
+const pad2 = (n) => String(n).padStart(2, '0');
+async function seedThread(conn, n) {
+  await conn.query("INSERT INTO tenants (id,name) VALUES (900001,'T1')");
+  await conn.query("INSERT INTO users (id,tenant_id,name,email,password_hash,role,status) VALUES (900050,900001,'Admin','a@__test__','x','admin','active')");
+  await conn.query("INSERT INTO instances (wid,tenant_id) VALUES ('W1',900001)");
+  await conn.query("INSERT INTO sentinela_instances (id,tenant_id,owner_user_id,name,token,capture_wid) VALUES ('__i1__',900001,900050,'A','t1','W1')");
+  await conn.query("INSERT INTO contacts (id,tenant_id,phone,name) VALUES ('C1',900001,'5531900000001','Alice')");
+  await conn.query("INSERT INTO chats (id,tenant_id,title,is_group) VALUES ('CHP',900001,'Alice',0)");
+  const rows = [], params = [];
+  const base = Date.UTC(2026, 6, 1, 10, 0, 0); // 2026-07-01 10:00:00, +1 min por mensagem
+  for (let i = 0; i < n; i++) {
+    const d = new Date(base + i * 60000);
+    const ts = `${d.getUTCFullYear()}-${pad2(d.getUTCMonth() + 1)}-${pad2(d.getUTCDate())} ${pad2(d.getUTCHours())}:${pad2(d.getUTCMinutes())}:${pad2(d.getUTCSeconds())}`;
+    rows.push("(?,900001,'CHP','C1',?, 'text',0,0,?,'W1')");
+    params.push(`p${String(i).padStart(3, '0')}`, `msg ${i}`, ts);
+  }
+  await conn.query(`INSERT INTO messages (id,tenant_id,chat_id,contact_id,text,type,from_me,from_internal,timestamp,wid) VALUES ${rows.join(',')}`, params);
+}
+
+describe('GET /api/chats/:id/messages — paginação (mais recentes primeiro, ordem cronológica)', () => {
+  it('1-3. >50 msgs: página 1 traz as 50 MAIS RECENTES em ordem cronológica', async () => {
+    await withTx(async (c) => {
+      await seedThread(c, 120); const app = makeApp(c);
+      const r = await request(app).get('/api/chats/CHP/messages?limit=50&page=1').set('Authorization', bearer(ADMIN));
+      expect(r.body.total).toBe(120);
+      const ids = r.body.messages.map((m) => m.id);
+      expect(ids).toHaveLength(50);
+      expect(ids[0]).toBe('p070');  // mais antiga DA PÁGINA
+      expect(ids[49]).toBe('p119'); // a mais recente do histórico
+      const ts = r.body.messages.map((m) => new Date(m.at).getTime());
+      expect(ts).toEqual([...ts].sort((a, b) => a - b)); // cronológico crescente
+    });
+  });
+  it('4-5. página 2 traz as 50 anteriores, todas ANTES da página 1, sem sobreposição', async () => {
+    await withTx(async (c) => {
+      await seedThread(c, 120); const app = makeApp(c);
+      const p1 = await request(app).get('/api/chats/CHP/messages?limit=50&page=1').set('Authorization', bearer(ADMIN));
+      const p2 = await request(app).get('/api/chats/CHP/messages?limit=50&page=2').set('Authorization', bearer(ADMIN));
+      const ids1 = p1.body.messages.map((m) => m.id);
+      const ids2 = p2.body.messages.map((m) => m.id);
+      expect(ids2[0]).toBe('p020'); expect(ids2[49]).toBe('p069');
+      expect(ids2.some((id) => ids1.includes(id))).toBe(false); // sem duplicação
+      expect(Math.max(...ids2.map((id) => +id.slice(1)))).toBeLessThan(Math.min(...ids1.map((id) => +id.slice(1))));
+    });
+  });
+  it('7. somando as páginas (prepend) cobre o total sem buracos; além do fim vem vazio', async () => {
+    await withTx(async (c) => {
+      await seedThread(c, 120); const app = makeApp(c);
+      const collect = [];
+      for (const page of [1, 2, 3]) {
+        const r = await request(app).get(`/api/chats/CHP/messages?limit=50&page=${page}`).set('Authorization', bearer(ADMIN));
+        collect.unshift(...r.body.messages.map((m) => m.id)); // prepend, como no frontend
+      }
+      expect(collect).toHaveLength(120);
+      expect(new Set(collect).size).toBe(120); // sem duplicação global
+      expect(collect[0]).toBe('p000'); expect(collect[119]).toBe('p119'); // cronológico completo
+      const p4 = await request(app).get('/api/chats/CHP/messages?limit=50&page=4').set('Authorization', bearer(ADMIN));
+      expect(p4.body.messages).toEqual([]); // nada mais → botão desaparece no frontend
+    });
+  });
+  it('6. empate de timestamp é desempatado por id (ordem estável e cronológica)', async () => {
+    await withTx(async (c) => {
+      await conn2seedTie(c); const app = makeApp(c);
+      const r = await request(app).get('/api/chats/CHT/messages?limit=50').set('Authorization', bearer(ADMIN));
+      expect(r.body.messages.map((m) => m.id)).toEqual(['t1a', 't1b', 't1c', 't2a']);
+    });
+  });
+});
+
+// mesmo timestamp em t1a/t1b/t1c (desempate por id asc), t2a um segundo depois.
+async function conn2seedTie(conn) {
+  await conn.query("INSERT INTO tenants (id,name) VALUES (900001,'T1')");
+  await conn.query("INSERT INTO users (id,tenant_id,name,email,password_hash,role,status) VALUES (900050,900001,'Admin','a@__test__','x','admin','active')");
+  await conn.query("INSERT INTO instances (wid,tenant_id) VALUES ('W1',900001)");
+  await conn.query("INSERT INTO sentinela_instances (id,tenant_id,owner_user_id,name,token,capture_wid) VALUES ('__i1__',900001,900050,'A','t1','W1')");
+  await conn.query("INSERT INTO contacts (id,tenant_id,phone,name) VALUES ('C1',900001,'5531900000001','Alice')");
+  await conn.query("INSERT INTO chats (id,tenant_id,title,is_group) VALUES ('CHT',900001,'Alice',0)");
+  await conn.query(`INSERT INTO messages (id,tenant_id,chat_id,contact_id,text,type,from_me,from_internal,timestamp,wid) VALUES
+    ('t1a',900001,'CHT','C1','a','text',0,0,'2026-07-01 10:00:00','W1'),
+    ('t1b',900001,'CHT','C1','b','text',0,0,'2026-07-01 10:00:00','W1'),
+    ('t1c',900001,'CHT','C1','c','text',0,0,'2026-07-01 10:00:00','W1'),
+    ('t2a',900001,'CHT','C1','d','text',0,0,'2026-07-01 10:00:01','W1')`);
+}

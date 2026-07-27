@@ -51,6 +51,7 @@ export default function ConversationsView({ groupMode }: { groupMode: boolean })
   const [page, setPage] = React.useState(1);
   const [loading, setLoading] = React.useState(true);
   const [error, setError] = React.useState('');
+  const [reloadKey, setReloadKey] = React.useState(0); // dispara nova requisição no retry
 
   // Filtros
   const [search, setSearch] = React.useState('');
@@ -102,7 +103,7 @@ export default function ConversationsView({ groupMode }: { groupMode: boolean })
       .catch((e: Error) => { if (e.name !== 'AbortError') setError(friendlyError(e.message) || 'Falha ao carregar as conversas'); })
       .finally(() => { if (!ac.signal.aborted) setLoading(false); });
     return () => ac.abort();
-  }, [params]);
+  }, [params, reloadKey]);
 
   if (selected) return <ChatThreadView chat={selected} onBack={() => setSelected(null)} />;
 
@@ -174,7 +175,7 @@ export default function ConversationsView({ groupMode }: { groupMode: boolean })
             <div className="flex h-12 w-12 items-center justify-center rounded-full bg-destructive/10 text-destructive"><AlertCircle className="h-6 w-6" /></div>
             <h3 className="text-base font-semibold text-foreground">Não foi possível carregar</h3>
             <p className="max-w-sm text-sm text-muted-foreground">{error}</p>
-            <Button variant="outline" size="sm" onClick={() => setPage((p) => p)}>Tentar novamente</Button>
+            <Button variant="outline" size="sm" onClick={() => setReloadKey((k) => k + 1)}>Tentar novamente</Button>
           </div>
         ) : loading ? (
           <div className="divide-y divide-border">

@@ -41,7 +41,7 @@ Nunca há fallback para "todas as instâncias do tenant". Conjunto visível vazi
 | `limit` | int 1–100 | 20 | Acima de 100 é **limitado** a 100. |
 | `is_group` | `0`\|`1` | — | Individual (0) ou grupo (1). Inválido → `400`. |
 | `search` | string | — | Busca por **nome ou telefone do contato** (`LIKE`). |
-| `keyword` | string | — | Conversas que **contêm alguma mensagem** casando o termo no texto/transcrição (`EXISTS` com FULLTEXT + fallback LIKE, mesma estratégia da thread). Não confundir com `search` (contato). |
+| `keyword` | string | — | Conversas que **contêm alguma mensagem** casando o termo no texto/transcrição (`EXISTS` com FULLTEXT + fallback LIKE, mesma estratégia da thread). A subquery respeita o **mesmo escopo de captura visível** (tenant + `widScope`, i.e. RBAC ∩ `instance_id` ∩ `team_id` ∩ `user_id`): um match numa instância **não autorizada** do mesmo chat **não** vaza a conversa. Não confundir com `search` (contato). |
 | `type` | string | — | Filtra pelo **tipo da última mensagem** da conversa (`text`, `audio`, `image`, …). |
 | `instance_id` | string | — | `sentinela_instances.id` (instância gerenciada). Traduzido para `capture_wid`. |
 | `team_id` | int | — | Restringe às instâncias vinculadas à equipe (`team_instances` → `capture_wid`). Interseção com o escopo RBAC e demais restrições. |
@@ -127,7 +127,16 @@ para não-superadmin → `404`).
 
 O chat é **validado no escopo antes de qualquer query de mensagens**: precisa pertencer ao
 tenant e (gestor/usuário) a uma instância visível. Caso contrário → `404` (sem oráculo de
-existência entre tenants). Ordenação cronológica: `timestamp ASC, id ASC`.
+existência entre tenants).
+
+**Paginação (mais recentes primeiro).** A página **1** traz as `limit` mensagens **mais
+recentes**; a página **2**, as `limit` anteriores, e assim por diante (paginação "para trás" no
+tempo). No banco a seleção é feita em ordem decrescente (`timestamp DESC, id DESC LIMIT/OFFSET`) e
+**cada página é revertida para ordem cronológica** (`asc`) antes de responder — ou seja, dentro de
+qualquer página as mensagens vêm da mais antiga para a mais recente. O desempate por `id` é a mesma
+chave nos dois sentidos, então as páginas **não se sobrepõem nem deixam buracos**. O frontend abre a
+conversa no fim (mensagem mais recente) e faz **prepend** das páginas anteriores no topo, com
+deduplicação por `id` e preservação da posição de scroll. `hasMore` = mensagens carregadas < `total`.
 
 ### Resposta `200`
 ```json

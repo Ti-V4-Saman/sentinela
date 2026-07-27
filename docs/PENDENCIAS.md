@@ -36,16 +36,24 @@ Itens conhecidos, adiados de propósito, com a fase a que pertencem.
   equipe/usuário (`team_id`/`user_id`), mas a resposta de `GET /api/chats` não carrega o responsável
   resolvido de cada linha (o contrato só traz a instância). Exibir a coluna exigiria estender a API para
   derivar o vínculo por `capture_wid` → instância → equipe/usuário. Registrado em 2026-07-27.
-- **Thread com paginação para frente (mais antigas → mais novas).** `ChatThreadView` carrega a página 1
-  (mais antigas) e o botão "Carregar mais mensagens" anexa as seguintes, com scroll ao fim na carga
-  inicial. Para conversas muito longas, avaliar paginação reversa (âncora no fim) numa iteração futura.
-  Registrado em 2026-07-27.
+- ✅ **Paginação da thread (mais recentes primeiro) — CORRIGIDA (2026-07-27).** A página 1 traz as
+  mensagens mais recentes; "Carregar mensagens anteriores" (no topo) faz **prepend** das páginas
+  anteriores com dedup por `id` e preservação do scroll. Backend pagina em `DESC` e reverte cada
+  página para ordem cronológica. Validado ao vivo com thread sintética de 120 mensagens (3 páginas)
+  e por testes de contrato (ordem, não-sobreposição, desempate por `id`, fim do histórico).
 - **Sem prévia de mídia (herdado da Fase 2).** O schema só guarda `type` + `text`/transcrição; áudio/
   imagem/vídeo/documento renderizam como rótulo + ícone + legenda/transcrição ("sem prévia"). Prévia real
   depende de URL de mídia no pipeline. Registrado em 2026-07-27.
 
 ## Ferramentas / QA
 
+- **Cobertura automatizada de comportamentos de thread que dependem do DOM.** A troca rápida de
+  conversa (guarda por `keyRef` descarta respostas de paginação obsoletas) e o erro ao "Carregar
+  mensagens anteriores" (mostra aviso inline **sem apagar** o histórico já carregado) foram validados
+  **por código** e **ao vivo**, mas não há harness DOM (RTL/jsdom) no projeto para testá-los
+  automaticamente. A lógica pura de prepend/dedup tem unit test (`test/thread-merge.test.js`); o
+  contrato de paginação do backend tem testes de API. Adicionar RTL+jsdom para cobrir o restante.
+  Registrado em 2026-07-27.
 - **Lint real com ESLint.** Hoje `npm run lint` executa apenas `vite build` (não faz análise
   estática de fato). Configurar ESLint (flat config, plugins React/hooks + TS) e apontar o script
   `lint` para ele. Não bloqueia o porte do design system. Registrado em 2026-07-26.

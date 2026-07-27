@@ -190,9 +190,15 @@ export function createChatsRouter(pool) {
       if (dFrom) { outWhere.push(`msg.last_ts ${dFrom.op} ?`); outArgs.push(dFrom.value); }
       if (dTo) { outWhere.push(`msg.last_ts ${dTo.op} ?`); outArgs.push(dTo.value); }
       if (keyword) {
-        // Conversas que CONTÊM alguma mensagem casando a palavra-chave (FULLTEXT/LIKE).
+        // Conversas que CONTÊM alguma mensagem casando a palavra-chave (FULLTEXT/LIKE),
+        // RESTRITA ao mesmo escopo de captura visível da listagem (tenant + widScope, que já é
+        // RBAC ∩ instance_id ∩ team_id ∩ user_id). Sem isso, um match numa instância NÃO
+        // autorizada do mesmo chat vazaria a conversa para gestor/usuário.
         const ks = messageTextSearch('mk.text', keyword);
-        outWhere.push(`EXISTS (SELECT 1 FROM messages mk WHERE mk.tenant_id = msg.tenant_id AND mk.chat_id = msg.chat_id AND ${ks.sql})`);
+        let exists = 'EXISTS (SELECT 1 FROM messages mk WHERE mk.tenant_id = msg.tenant_id AND mk.chat_id = msg.chat_id';
+        if (widScope !== 'ALL') { exists += ` AND mk.wid IN (${widScope.map(() => '?').join(',')})`; outArgs.push(...widScope); }
+        exists += ` AND ${ks.sql})`;
+        outWhere.push(exists);
         outArgs.push(...ks.params);
       }
       const outClause = outWhere.join(' AND ');
@@ -306,15 +312,21 @@ export function createChatsRouter(pool) {
       const [countRows] = await pool.query(`SELECT COUNT(*) AS total FROM messages m WHERE ${clause}`, args);
       const total = countRows[0].total;
 
+      // Página 1 = as `limit` mensagens MAIS RECENTES; página 2 = as `limit` anteriores, e assim
+      // por diante (paginação "para trás" no tempo). Selecionamos em ordem decrescente e revertemos
+      // cada página para ordem CRONOLÓGICA (asc) antes de enviar — o frontend faz prepend das
+      // páginas mais antigas no topo. Empate de timestamp é desempatado por `id` (mesma chave nos
+      // dois sentidos), garantindo páginas sem sobreposição nem buracos.
       const [rows] = await pool.query(
         `SELECT m.id, m.chat_id, m.type, m.text, m.from_me, m.from_internal, m.timestamp,
                 m.contact_id, ct.name AS contact_name, ct.phone AS contact_phone
          FROM messages m
          LEFT JOIN contacts ct ON ct.tenant_id = m.tenant_id AND ct.id = m.contact_id
          WHERE ${clause}
-         ORDER BY m.timestamp ASC, m.id ASC
+         ORDER BY m.timestamp DESC, m.id DESC
          LIMIT ? OFFSET ?`,
         [...args, limit, offset]);
+      rows.reverse();
 
       const messages = rows.map((r) => ({
         id: r.id,
