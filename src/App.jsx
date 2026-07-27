@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import ConnectModal from './components/ConnectModal';
-import ServerConfigModal from './components/ServerConfigModal';
-import CreateInstanceModal from './components/CreateInstanceModal';
+import { ConnectDialog } from './components/instances/connect-dialog';
+import { ServerConfigDialog } from './components/settings/server-config-dialog';
+import { CreateInstanceDialog } from './components/instances/create-instance-dialog';
 import {
   fetchInstancesApi,
   createInstanceApi,
@@ -17,7 +17,7 @@ import ClientsView from './views/ClientsView';
 import UsersView from './views/UsersView';
 import TeamsView from './views/TeamsView';
 import ConnectionsView from './views/ConnectionsView';
-import MeusDadosModal from './components/MeusDadosModal';
+import { MeusDadosDialog } from './components/account/meus-dados-dialog';
 import { EditTokenDialog } from './components/instances/edit-token-dialog';
 import { useToast } from './components/ui/ToastProvider';
 import { useConfirm } from './components/ui/ConfirmProvider';
@@ -25,7 +25,7 @@ import { friendlyError } from './utils/validation';
 import { homeView } from './utils/nav';
 
 export default function App() {
-  const currentUser = getUser();
+  const [currentUser, setCurrentUser] = useState(getUser());
   const admin = isAdminRole();
   const myId = currentUser?.id;
   // Qualquer usuário com cliente (não-superadmin) cria/conecta as próprias instâncias.
@@ -256,6 +256,7 @@ export default function App() {
       activeView={activeView}
       setActiveView={setActiveView}
       onOpenMeusDados={() => setIsMeusDadosOpen(true)}
+      onOpenServerConfig={admin || currentUser?.role === 'superadmin' ? () => setIsServerModalOpen(true) : undefined}
       onLogout={handleLogout}
       onHome={() => setActiveView(homeView(currentUser?.role))}
     >
@@ -287,24 +288,27 @@ export default function App() {
 
       {/* Modais */}
       {connectingInstance && (
-        <ConnectModal
+        <ConnectDialog
           instance={connectingInstance}
           onClose={() => setConnectingInstance(null)}
           onConnectedSuccess={handleConnectionSuccess}
         />
       )}
       {isServerModalOpen && (
-        <ServerConfigModal
+        <ServerConfigDialog
           config={serverConfig}
           onClose={() => setIsServerModalOpen(false)}
           onSave={(newConfig) => { setServerConfig(newConfig); showToast('Configurações do servidor atualizadas!'); }}
         />
       )}
       {isCreateModalOpen && (
-        <CreateInstanceModal onClose={() => setIsCreateModalOpen(false)} onCreate={handleCreateInstance} />
+        <CreateInstanceDialog onClose={() => setIsCreateModalOpen(false)} onCreate={handleCreateInstance} />
       )}
       {isMeusDadosOpen && (
-        <MeusDadosModal onClose={() => setIsMeusDadosOpen(false)} />
+        <MeusDadosDialog
+          onClose={() => setIsMeusDadosOpen(false)}
+          onUpdated={(u) => setCurrentUser((prev) => ({ ...prev, name: u.name }))}
+        />
       )}
       {editTokenInstance && (
         <EditTokenDialog

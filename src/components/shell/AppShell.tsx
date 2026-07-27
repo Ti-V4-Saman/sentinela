@@ -3,12 +3,13 @@ import { Menu, X } from 'lucide-react';
 import { Sidebar } from './Sidebar';
 
 export function AppShell({
-  user, activeView, setActiveView, onOpenMeusDados, onLogout, onHome, children,
+  user, activeView, setActiveView, onOpenMeusDados, onOpenServerConfig, onLogout, onHome, children,
 }: {
   user: { name?: string; role?: string } | null;
   activeView: string;
   setActiveView: (v: string) => void;
   onOpenMeusDados: () => void;
+  onOpenServerConfig?: () => void;
   onLogout: () => void;
   onHome: () => void;
   children: React.ReactNode;
@@ -22,7 +23,7 @@ export function AppShell({
       {/* Sidebar fixa (desktop) */}
       <aside className="fixed inset-y-0 left-0 z-40 hidden w-60 border-r border-sidebar-border md:block">
         <Sidebar user={user} activeView={activeView} onNavigate={nav} onHome={home}
-          onOpenMeusDados={onOpenMeusDados} onLogout={onLogout} />
+          onOpenMeusDados={onOpenMeusDados} onOpenServerConfig={onOpenServerConfig} onLogout={onLogout} />
       </aside>
 
       {/* Drawer (mobile) */}

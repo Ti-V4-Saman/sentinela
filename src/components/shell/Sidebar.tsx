@@ -1,7 +1,7 @@
 import * as React from 'react';
 import {
   ShieldCheck, Radio, Building2, Users, UsersRound,
-  Settings, LogOut, Sun, Moon, ChevronsUpDown,
+  Settings, LogOut, Sun, Moon, ChevronsUpDown, Server,
 } from 'lucide-react';
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem,
@@ -25,13 +25,14 @@ const NAV: { key: NavKey; label: string; icon: React.ComponentType<{ className?:
 ];
 
 export function Sidebar({
-  user, activeView, onNavigate, onHome, onOpenMeusDados, onLogout,
+  user, activeView, onNavigate, onHome, onOpenMeusDados, onOpenServerConfig, onLogout,
 }: {
   user: { name?: string; role?: string } | null;
   activeView: string;
   onNavigate: (key: NavKey) => void;
   onHome: () => void;
   onOpenMeusDados: () => void;
+  onOpenServerConfig?: () => void;
   onLogout: () => void;
 }) {
   const [theme, setTheme] = React.useState<Theme>(getTheme());
@@ -102,6 +103,11 @@ export function Sidebar({
               <DropdownMenuItem onClick={onOpenMeusDados}>
                 <Settings className="h-4 w-4" /> Meus dados
               </DropdownMenuItem>
+              {onOpenServerConfig && (
+                <DropdownMenuItem onClick={onOpenServerConfig}>
+                  <Server className="h-4 w-4" /> Servidor QuePasa
+                </DropdownMenuItem>
+              )}
               <DropdownMenuItem onClick={() => setTheme(toggleTheme())}>
                 {theme === 'dark' ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
                 Tema: {theme === 'dark' ? 'claro' : 'escuro'}
