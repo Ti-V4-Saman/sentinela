@@ -3,6 +3,7 @@ import { requireActor } from '../middleware/actor.js';
 import {
   visibleCaptureWids, conversationTenantFilter, messageTextSearch,
 } from '../middleware/conversationScope.js';
+import { writeAudit, clientIp } from '../audit.js';
 
 const MAX_LIMIT = 100;
 const DEFAULT_LIMIT = 20;
@@ -371,8 +372,16 @@ export function createChatsRouter(pool) {
         at: r.timestamp,
       }));
 
+      const ref = encodeRef(Number(chat.tenant_id), chat.id);
+      // Auditoria: abertura/visualização da thread (só a 1ª página, para não logar cada paginação).
+      if (page === 1) {
+        writeAudit(pool, {
+          tenantId: chat.tenant_id, actor: req.actor, action: 'view_thread', resource: 'chat',
+          resourceId: ref, ip: clientIp(req), metadata: { isGroup: Number(chat.is_group) === 1 },
+        });
+      }
       res.json({
-        chat: { id: chat.id, ref: encodeRef(Number(chat.tenant_id), chat.id), title: chat.title || null, isGroup: Number(chat.is_group) === 1 },
+        chat: { id: chat.id, ref, title: chat.title || null, isGroup: Number(chat.is_group) === 1 },
         page, limit, total, messages,
       });
     } catch (e) {

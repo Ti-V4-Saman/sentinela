@@ -1,6 +1,7 @@
 import express from 'express';
 import { tenantFilter, visibleInstanceIds } from '../middleware/tenantScope.js';
 import { loadActor, isAdmin } from '../middleware/actor.js';
+import { writeAudit, clientIp } from '../audit.js';
 
 // includeToken controla exposição do token QuePasa (credencial sensível):
 // só admin/superadmin e o DONO da instância recebem.
@@ -166,6 +167,7 @@ export function createInstancesRouter(pool) {
       // Limpar a ponte (revoga acesso operacional de gestor/usuário imediatamente).
       if (captureWid === null || captureWid === '') {
         await pool.query('UPDATE sentinela_instances SET capture_wid = NULL WHERE id = ?', [id]);
+        writeAudit(pool, { tenantId: inst.tenant_id, actor, action: 'set_capture_wid', resource: 'instance', resourceId: id, ip: clientIp(req), metadata: { mapped: false } });
         return res.json({ id, captureWid: null });
       }
       if (typeof captureWid !== 'string') return res.status(400).json({ error: 'captureWid inválido' });
@@ -185,6 +187,7 @@ export function createInstancesRouter(pool) {
         }
         throw e;
       }
+      writeAudit(pool, { tenantId: inst.tenant_id, actor, action: 'set_capture_wid', resource: 'instance', resourceId: id, ip: clientIp(req), metadata: { mapped: true } });
       res.json({ id, captureWid });
     } catch (e) {
       console.error('set capture_wid:', e);

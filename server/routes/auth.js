@@ -2,6 +2,7 @@ import express from 'express';
 import rateLimit from 'express-rate-limit';
 import { verifyPassword } from '../auth/password.js';
 import { signToken } from '../auth/jwt.js';
+import { writeAudit, clientIp } from '../audit.js';
 
 // Hash "descartável" para igualar o tempo de resposta quando o email não existe,
 // evitando enumeração de usuários por timing (sempre roda um bcrypt compare).
@@ -30,9 +31,15 @@ export function createAuthRouter(pool) {
       // o tempo de resposta não revele se o email existe. Resposta uniforme.
       const passwordOk = await verifyPassword(password, user ? user.password_hash : DUMMY_HASH);
       if (!user || user.status !== 'active' || !passwordOk) {
+        // Falha de autenticação: registra o EVENTO + IP, sem e-mail/senha/payload (LGPD).
+        await writeAudit(pool, { action: 'login_failed', resource: 'auth', status: 'fail', ip: clientIp(req) });
         return res.status(401).json({ error: 'Credenciais inválidas' });
       }
       const token = signToken({ userId: user.id, tenantId: user.tenant_id, role: user.role });
+      await writeAudit(pool, {
+        tenantId: user.tenant_id, actor: { id: user.id, role: user.role, tenant_id: user.tenant_id },
+        action: 'login', resource: 'auth', ip: clientIp(req),
+      });
       return res.json({ token, user: { id: user.id, name: user.name, role: user.role, tenantId: user.tenant_id } });
     } catch (e) {
       console.error('login error:', e);

@@ -1,5 +1,6 @@
 import express from 'express';
 import { requireActor } from '../middleware/actor.js';
+import { writeAudit, clientIp } from '../audit.js';
 
 const formatTeam = (r) => ({
   id: r.id,
@@ -127,6 +128,7 @@ export function createTeamsRouter(pool) {
         return res.status(404).json({ error: 'Instância não encontrada no cliente da equipe' });
       }
       await pool.query('INSERT INTO team_instances (team_id, instance_id) VALUES (?, ?)', [team.id, instanceId]);
+      writeAudit(pool, { tenantId: team.tenant_id, actor: req.actor, action: 'link_team_instance', resource: 'team_instance', resourceId: `${team.id}:${instanceId}`, ip: clientIp(req) });
       res.status(201).json({ success: true, teamId: team.id, instanceId });
     } catch (e) {
       if (e.code === 'ER_DUP_ENTRY') return res.status(409).json({ error: 'Instância já vinculada à equipe' });
@@ -142,6 +144,7 @@ export function createTeamsRouter(pool) {
       const [r] = await pool.query('DELETE FROM team_instances WHERE team_id = ? AND instance_id = ?',
         [team.id, req.params.instanceId]);
       if (r.affectedRows === 0) return res.status(404).json({ error: 'Vínculo não encontrado' });
+      writeAudit(pool, { tenantId: team.tenant_id, actor: req.actor, action: 'unlink_team_instance', resource: 'team_instance', resourceId: `${team.id}:${req.params.instanceId}`, ip: clientIp(req) });
       res.json({ success: true, message: 'Instância desvinculada' });
     } catch (e) {
       console.error('unlink team instance:', e);
