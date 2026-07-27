@@ -34,9 +34,9 @@ function VolumeSection({ title, icon: Icon, items, loading, error, onExport, exp
   );
 }
 
-export default function ReportsView() {
+export default function ReportsView({ tenantId: locked }: { tenantId?: number }) {
   const me = getUser();
-  const isSuper = me?.role === 'superadmin';
+  const isSuper = me?.role === 'superadmin' && locked == null;
   const toast = useToast();
   const init = React.useMemo(() => defaultRange(), []);
   const [from, setFrom] = React.useState(init.from);
@@ -52,7 +52,8 @@ export default function ReportsView() {
 
   React.useEffect(() => { if (isSuper) listTenants().then(setTenants).catch(() => {}); }, [isSuper]);
 
-  const params = React.useMemo(() => ({ from, to, tenant_id: isSuper && tenantId !== 'ALL' ? tenantId : undefined, limit: 100 }), [from, to, isSuper, tenantId]);
+  const scopeTid = locked != null ? locked : (isSuper && tenantId !== 'ALL' ? tenantId : undefined);
+  const params = React.useMemo(() => ({ from, to, tenant_id: scopeTid, limit: 100 }), [from, to, scopeTid]);
 
   React.useEffect(() => {
     let alive = true;
@@ -67,7 +68,7 @@ export default function ReportsView() {
   const exportCsv = async (type: string) => {
     setExporting(type);
     try {
-      const { blob, filename } = await downloadReportCsv({ type, from, to, tenant_id: isSuper && tenantId !== 'ALL' ? tenantId : undefined });
+      const { blob, filename } = await downloadReportCsv({ type, from, to, tenant_id: scopeTid });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url; a.download = filename; document.body.appendChild(a); a.click();

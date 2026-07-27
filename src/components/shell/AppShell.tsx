@@ -2,6 +2,7 @@ import * as React from 'react';
 import { Menu, X } from 'lucide-react';
 import { Sidebar } from './Sidebar';
 import { EnvBanner } from './EnvBanner';
+import { TenantBanner } from './TenantBanner';
 
 export function AppShell({
   user, activeView, setActiveView, onOpenMeusDados, onOpenServerConfig, onLogout, onHome, children,
@@ -45,6 +46,7 @@ export function AppShell({
       {/* Conteúdo */}
       <div className="md:pl-60">
         <EnvBanner />
+        <TenantBanner />
         {/* Top bar mobile */}
         <div className="flex items-center gap-3 border-b border-border bg-background px-4 py-3 md:hidden">
           <button onClick={() => setMobileOpen(true)} aria-label="Abrir menu"

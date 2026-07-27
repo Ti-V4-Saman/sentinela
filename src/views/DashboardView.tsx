@@ -22,9 +22,10 @@ function Kpi({ icon: Icon, label, value, tone }: { icon: React.ComponentType<{ c
   );
 }
 
-export default function DashboardView() {
+export default function DashboardView({ tenantId: locked }: { tenantId?: number }) {
   const me = getUser();
-  const isSuper = me?.role === 'superadmin';
+  // No modo cliente (locked definido) o escopo é fixo e o seletor de cliente some.
+  const isSuper = me?.role === 'superadmin' && locked == null;
   const init = React.useMemo(() => defaultRange(), []);
   const [from, setFrom] = React.useState(init.from);
   const [to, setTo] = React.useState(init.to);
@@ -39,7 +40,7 @@ export default function DashboardView() {
 
   React.useEffect(() => { if (isSuper) listTenants().then(setTenants).catch(() => {}); }, [isSuper]);
 
-  const params = React.useMemo(() => ({ from, to, tenant_id: isSuper && tenantId !== 'ALL' ? tenantId : undefined }), [from, to, isSuper, tenantId]);
+  const params = React.useMemo(() => ({ from, to, tenant_id: locked != null ? locked : (isSuper && tenantId !== 'ALL' ? tenantId : undefined) }), [from, to, isSuper, tenantId, locked]);
 
   React.useEffect(() => {
     let alive = true;

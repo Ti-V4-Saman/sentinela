@@ -21,9 +21,10 @@ import { friendlyError } from '../utils/validation';
 
 const PAGE_SIZE = 10;
 
-export default function UsersView() {
+export default function UsersView({ tenantId: locked }: { tenantId?: number }) {
   const me = getUser();
-  const isSuper = me?.role === 'superadmin';
+  // Modo cliente (locked): lista escopada, filtro de cliente oculto, criação no cliente ativo.
+  const isSuper = me?.role === 'superadmin' && locked == null;
   const toast = useToast();
   const confirm = useConfirm();
 
@@ -51,7 +52,7 @@ export default function UsersView() {
     setError('');
     try {
       if (isSuper && tenants.length === 0) setTenants(await listTenants());
-      const tf = isSuper && tenantFilter !== 'ALL' ? tenantFilter : undefined;
+      const tf = locked != null ? locked : (isSuper && tenantFilter !== 'ALL' ? tenantFilter : undefined);
       setUsers(await listUsers(tf));
     } catch (e) {
       const msg = friendlyError((e as Error).message) || 'Falha ao carregar os usuários';
@@ -60,7 +61,7 @@ export default function UsersView() {
       if (opts?.silent) setRefreshing(false); else setLoading(false);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isSuper, tenantFilter]);
+  }, [isSuper, tenantFilter, locked]);
 
   React.useEffect(() => { load(); }, [load]);
 
@@ -90,7 +91,8 @@ export default function UsersView() {
       await updateUser(editing!.id, body);
       toast.success('Usuário atualizado', `"${body.name}" foi salvo.`);
     } else {
-      await createUser(body);
+      // No modo cliente, o superadmin cria no cliente ATIVO (injeta o tenant_id).
+      await createUser(locked != null ? { ...body, tenantId: locked } : body);
       toast.success('Usuário criado', `"${body.name}" foi adicionado com sucesso.`);
     }
     await load();
@@ -311,7 +313,7 @@ export default function UsersView() {
           initial={editing}
           isSuper={isSuper}
           tenants={tenants}
-          defaultTenantId={isSuper ? '' : me?.tenantId}
+          defaultTenantId={isSuper ? '' : (locked != null ? locked : me?.tenantId)}
           confirm={confirm}
           onClose={() => setFormOpen(false)}
           onSubmit={handleSubmit}

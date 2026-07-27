@@ -173,3 +173,54 @@ describe('drill-down — conversas via /api/chats?tenant_id (superadmin)', () =>
     });
   });
 });
+
+describe('GET /api/clients/:id — validação do tenant ativo (seletor do superadmin)', () => {
+  it('superadmin valida qualquer cliente existente', async () => {
+    await withTx(async (c) => {
+      await seed(c); const app = makeApp(c);
+      const r = await request(app).get('/api/clients/900001').set('Authorization', bearer(SUPER));
+      expect(r.status).toBe(200);
+      expect(r.body).toMatchObject({ id: 900001, name: 'T1', status: 'active' });
+    });
+  });
+  it('admin valida só o próprio tenant; outro → 404 (não revela existência)', async () => {
+    await withTx(async (c) => {
+      await seed(c); const app = makeApp(c);
+      expect((await request(app).get('/api/clients/900001').set('Authorization', bearer(ADMIN1))).status).toBe(200);
+      expect((await request(app).get('/api/clients/900002').set('Authorization', bearer(ADMIN1))).status).toBe(404);
+    });
+  });
+  it('superadmin com tenant inexistente → 404', async () => {
+    await withTx(async (c) => {
+      await seed(c); const app = makeApp(c);
+      expect((await request(app).get('/api/clients/999999').set('Authorization', bearer(SUPER))).status).toBe(404);
+    });
+  });
+  it('gestor e usuário não acessam (403)', async () => {
+    await withTx(async (c) => {
+      await seed(c); const app = makeApp(c);
+      expect((await request(app).get('/api/clients/900001').set('Authorization', bearer(GESTOR))).status).toBe(403);
+      expect((await request(app).get('/api/clients/900001').set('Authorization', bearer(USER1))).status).toBe(403);
+    });
+  });
+  it('não expõe campos sensíveis (só id/name/status)', async () => {
+    await withTx(async (c) => {
+      await seed(c); const app = makeApp(c);
+      const r = await request(app).get('/api/clients/900001').set('Authorization', bearer(SUPER));
+      expect(Object.keys(r.body).sort()).toEqual(['id', 'name', 'status']);
+    });
+  });
+});
+
+describe('isolamento cross-tenant — admin não escapa do próprio tenant pela URL', () => {
+  it('admin passando tenant_id de OUTRO tenant em /api/chats é IGNORADO (vê só o próprio)', async () => {
+    await withTx(async (c) => {
+      await seed(c); const app = makeApp(c);
+      // ADMIN1 (t1) tenta escopar para t2 via query — o backend ignora o tenant_id p/ não-super.
+      const r = await request(app).get('/api/chats?tenant_id=900002').set('Authorization', bearer(ADMIN1));
+      const ids = r.body.chats.map((x) => x.id);
+      expect(ids).not.toContain('CH3');           // NÃO vaza chat do t2
+      expect(ids.sort()).toEqual(['CH1', 'CHG']); // só as conversas do próprio tenant
+    });
+  });
+});
