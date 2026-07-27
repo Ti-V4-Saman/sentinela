@@ -4,6 +4,7 @@ import { login } from '../services/authApi';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Field } from '@/components/field';
+import { EnvBanner } from '@/components/shell/EnvBanner';
 
 export default function LoginScreen({ onSuccess }) {
   const [email, setEmail] = useState('');
@@ -26,7 +27,8 @@ export default function LoginScreen({ onSuccess }) {
   };
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-background px-4">
+    <div className="relative flex min-h-screen items-center justify-center bg-background px-4">
+      <EnvBanner className="absolute inset-x-0 top-0" />
       <div className="w-full max-w-sm">
         <div className="mb-8 flex flex-col items-center">
           <div className="mb-3 flex h-14 w-14 items-center justify-center rounded-lg bg-primary text-primary-foreground">
