@@ -42,10 +42,21 @@ Nunca há fallback para "todas as instâncias do tenant". Conjunto visível vazi
 | `is_group` | `0`\|`1` | — | Individual (0) ou grupo (1). Inválido → `400`. |
 | `search` | string | — | Busca por **nome ou telefone do contato** (`LIKE`). |
 | `instance_id` | string | — | `sentinela_instances.id` (instância gerenciada). Traduzido para `capture_wid`. |
-| `date_from` / `date_to` | data ISO/`YYYY-MM-DD [HH:MM:SS]` | — | Filtra pela **última atividade**. Inválida → `400`. |
+| `date_from` / `date_to` | `YYYY-MM-DD` ou datetime ISO | — | Filtra pela **última atividade**. Formato ambíguo/inválido → `400`. |
 
 Paginação e ordenação são feitas **no banco**. Ordenação determinística: última atividade
 desc, depois `(tenant_id, chat_id)`.
+
+**Datas** (ver `parseDateBound`): `YYYY-MM-DD` em `date_from` = início do dia (`>= 00:00:00`);
+em `date_to` = **dia inteiro** (limite EXCLUSIVO no dia seguinte, `< dia+1 00:00:00`). Datetime
+ISO/`YYYY-MM-DD HH:MM[:SS]` é inclusivo (`>=`/`<=`); TZ/frações são descartadas (comparação
+wall-clock). Formatos como `01/07/2026` ou texto livre → `400`. `date_from > date_to` retorna
+lista vazia (sem erro).
+
+**Contato da conversa** (ver `contact_pick`): é o contato da **mensagem não-nula mais recente**
+do chat — independente da última mensagem (que pode ser enviada/interna/sem contato). Nunca é
+substituído silenciosamente pelo remetente da última mensagem. A busca por nome/telefone usa esse
+contato resolvido.
 
 ### Resposta `200`
 ```json
@@ -56,6 +67,7 @@ desc, depois `(tenant_id, chat_id)`.
   "chats": [
     {
       "id": "CHAT_ID",
+      "ref": "REF_OPACO_PARA_NAVEGACAO",
       "title": "Nome da conversa",
       "isGroup": false,
       "contact": { "id": "CONTACT_ID", "name": "Nome", "phone": "55DDDNNNNNNNN" },
@@ -67,7 +79,8 @@ desc, depois `(tenant_id, chat_id)`.
   ]
 }
 ```
-Não retorna `wid`, `tenant_id`, tokens nem payloads internos.
+Não retorna `wid`, `tenant_id`, tokens nem payloads internos. **`ref`** é um identificador
+opaco (codifica tenant+chat) para abrir o detalhe **sem ambiguidade** — passe-o como `:id`.
 
 ### Exemplo
 `GET /api/chats?is_group=0&search=Alice&limit=20&page=1&date_from=2026-07-01`
@@ -76,6 +89,12 @@ Não retorna `wid`, `tenant_id`, tokens nem payloads internos.
 
 ## `GET /api/chats/:id/messages` — thread paginada
 
+`:id` aceita o **`ref`** opaco (recomendado, retornado na listagem) **ou** o `chat_id` cru.
+Como `chats` tem PK composta `(tenant_id, id)`, um mesmo `chat_id` pode existir em mais de um
+tenant: para **superadmin** com `chat_id` cru ambíguo → `400` orientando usar o `ref`. Para os
+demais papéis o tenant do ator resolve. O RBAC é sempre revalidado (um `ref` de outro tenant
+para não-superadmin → `404`).
+
 ### Parâmetros (query)
 | Param | Tipo | Default | Observação |
 |---|---|---|---|
@@ -83,7 +102,7 @@ Não retorna `wid`, `tenant_id`, tokens nem payloads internos.
 | `limit` | int 1–100 | 20 | Limitado a 100. |
 | `type` | string | — | Filtra por tipo (`text`, `audio`, `image`, …) conforme os tipos reais no banco. |
 | `search` | string | — | Busca por palavra-chave no **texto/transcrição** (FULLTEXT + fallback LIKE). |
-| `date_from` / `date_to` | data | — | Filtra por `timestamp`. Inválida → `400`. |
+| `date_from` / `date_to` | `YYYY-MM-DD`/datetime ISO | — | Filtra por `timestamp` (mesma semântica de datas da listagem). Inválida → `400`. |
 | `instance_id` | string | — | Restringe à instância (opcional). |
 
 O chat é **validado no escopo antes de qualquer query de mensagens**: precisa pertencer ao
@@ -93,7 +112,7 @@ existência entre tenants). Ordenação cronológica: `timestamp ASC, id ASC`.
 ### Resposta `200`
 ```json
 {
-  "chat": { "id": "CHAT_ID", "title": "Nome", "isGroup": false },
+  "chat": { "id": "CHAT_ID", "ref": "REF_OPACO", "title": "Nome", "isGroup": false },
   "page": 1,
   "limit": 20,
   "total": 3,
@@ -122,7 +141,7 @@ existência entre tenants). Ordenação cronológica: `timestamp ASC, id ASC`.
 ## Erros
 | Código | Quando |
 |---|---|
-| `400` | `is_group`, `date_from`/`date_to` inválidos; `chat_id` ambíguo entre tenants (superadmin sem `instance_id`). |
+| `400` | `is_group`, `date_from`/`date_to` inválidos; `chat_id` cru ambíguo entre tenants (superadmin → use o `ref`). |
 | `401` | Token ausente/inválido/expirado; usuário desativado. |
 | `404` | Chat inexistente, de outro tenant, ou de instância não visível (indistinguíveis). |
 | `500` | Falha interna. |
@@ -135,14 +154,21 @@ por query `COUNT` equivalente (mesmos filtros). A listagem de chats deriva a úl
 a contagem por chat via window functions (`ROW_NUMBER`/`COUNT`/`MAX` particionados por
 `(tenant_id, chat_id)`), aproveitando `idx_msg_tenant_chat` e `idx_timestamp`.
 
-## Estratégia de busca (FULLTEXT)
+## Estratégia de busca (FULLTEXT) — caminhos separados
 `messages.text` tem índice **FULLTEXT** `ft_messages_text` (migration separada).
-`GET /api/chats/:id/messages?search=` usa:
-- termo vazio → sem filtro de texto;
-- termo curto (< `innodb_ft_min_token_size`, default 3) ou incompatível com boolean mode → `LIKE`;
-- termo compatível → híbrido `MATCH(text) AGAINST(? IN BOOLEAN MODE) OR text LIKE ?` — FULLTEXT
-  como caminho rápido; `LIKE` como fallback de correção (substring/stopword e linhas ainda não
-  commitadas, já que o índice FTS do InnoDB não enxerga linhas não-commitadas).
+`GET /api/chats/:id/messages?search=` escolhe **um único caminho** (nunca `MATCH` e `LIKE`
+simultâneos, para não neutralizar o índice) — ver `messageTextSearch(...).mode`:
+- **`none`** — termo vazio: sem filtro;
+- **`like`** — termo curto (< `innodb_ft_min_token_size`, default 3) ou sem token compatível com o
+  boolean mode: apenas `LIKE` (pode ser mais caro: varredura por substring);
+- **`fulltext`** — termo compatível: apenas `MATCH(text) AGAINST(? IN BOOLEAN MODE)` com prefixo `*`.
+
+Limitações do caminho FULLTEXT:
+- **substring no meio da palavra não é garantida** (o prefixo `*` casa só o início do token);
+- **stopwords** e **tamanho mínimo de token** dependem da configuração do MySQL (`innodb_ft_*`);
+- em testes (transação com rollback), o índice FTS do InnoDB **não enxerga linhas não-commitadas**,
+  então o caminho `fulltext` é validado por unit tests de `messageTextSearch` (qual caminho é
+  escolhido), e o filtro fim-a-fim é exercitado pelo caminho `like`.
 
 A busca em `GET /api/chats?search=` é por **contato** (nome/telefone) via `LIKE`, não por texto de mensagem.
 
