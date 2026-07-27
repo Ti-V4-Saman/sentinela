@@ -84,7 +84,12 @@ describe('GET /api/chats — RBAC / isolamento', () => {
       await seed(c); const app = makeApp(c);
       const r = await request(app).get('/api/chats').set('Authorization', bearer(SUPER));
       expect(r.status).toBe(200);
-      expect(chatIds(r.body)).toEqual(['CH1', 'CH2', 'CH3', 'CH4']); // CHV não tem mensagens
+      // Superadmin vê TODOS os tenants. Como o banco pode conter dados de OUTROS tenants (ex.:
+      // dados sintéticos de homologação), validamos por presença/ausência, não por igualdade exata:
+      // as 4 conversas COM mensagens do seed aparecem; a vazia (CHV) não.
+      const ids = chatIds(r.body);
+      for (const id of ['CH1', 'CH2', 'CH3', 'CH4']) expect(ids).toContain(id);
+      expect(ids).not.toContain('CHV');
     });
   });
   it('2. admin limitado ao próprio tenant', async () => {
