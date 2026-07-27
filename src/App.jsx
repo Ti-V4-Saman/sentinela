@@ -19,6 +19,7 @@ import TeamsView from './views/TeamsView';
 import ConnectionsView from './views/ConnectionsView';
 import { MeusDadosDialog } from './components/account/meus-dados-dialog';
 import { EditTokenDialog } from './components/instances/edit-token-dialog';
+import { CaptureWidDialog } from './components/instances/capture-wid-dialog';
 import { useToast } from './components/ui/ToastProvider';
 import { useConfirm } from './components/ui/ConfirmProvider';
 import { friendlyError } from './utils/validation';
@@ -47,6 +48,7 @@ export default function App() {
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
   const [isMeusDadosOpen, setIsMeusDadosOpen] = useState(false);
   const [editTokenInstance, setEditTokenInstance] = useState(null);
+  const [captureInstance, setCaptureInstance] = useState(null);
 
   // Carrega as conexões (com loading/erro para a UI).
   const loadInstances = React.useCallback(async () => {
@@ -272,6 +274,8 @@ export default function App() {
           onConnect={handleStartConnect}
           onDisconnect={handleDisconnect}
           onEditToken={(inst) => setEditTokenInstance(inst)}
+          canMapCapture={admin}
+          onMapCapture={(inst) => setCaptureInstance(inst)}
           canManage={(inst) => admin || inst.ownerUserId === myId}
           canCreate={canCreateInstance}
           onCreate={() => setIsCreateModalOpen(true)}
@@ -315,6 +319,13 @@ export default function App() {
           instance={editTokenInstance}
           onClose={() => setEditTokenInstance(null)}
           onSave={handleUpdateToken}
+        />
+      )}
+      {captureInstance && (
+        <CaptureWidDialog
+          instance={captureInstance}
+          onClose={() => setCaptureInstance(null)}
+          onSaved={() => { loadInstances(); showToast('Mapeamento de captura atualizado!'); }}
         />
       )}
     </AppShell>

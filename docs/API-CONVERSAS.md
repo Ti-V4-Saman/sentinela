@@ -186,8 +186,10 @@ A busca em `GET /api/chats?search=` é por **contato** (nome/telefone) via `LIKE
 
 ## Limitações conhecidas
 - **Ponte de captura obrigatória** para gestor/usuário: sem `capture_wid`, acesso zero (fail-closed).
-- `team_instances`/`user_instances` **ainda não têm CRUD** no sistema — precisam ser populados para
-  gestor/usuário enxergarem conversas (pendência registrada).
+- `team_instances`/`user_instances` **têm gestão** (endpoints + telas, bloco integração-capture-wid-vínculos):
+  vincule as instâncias à equipe (aba Instâncias no modal de Vínculos) ou ao usuário (ação Instâncias)
+  para gestor/usuário enxergarem conversas. O **preenchimento automático de `capture_wid` pelo pipeline**
+  segue pendente — enquanto isso, superadmin/admin mapeiam manualmente ("Mapear captura" na Gestão de Conexões).
 - **Drift de visibilidade de *management*:** `tenantScope.visibleInstanceIds` (usado por `/api/instances`)
   resolve por propriedade (`owner_user_id`), divergindo do modelo documentado de vínculos explícitos.
   As conversas usam a fonte correta (explícita); a reconciliação do management é pendência (não neste escopo).

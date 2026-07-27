@@ -1,6 +1,6 @@
 import * as React from 'react';
 import {
-  Radio, Wifi, WifiOff, Plus, RotateCw, MoreHorizontal, QrCode, Power, Settings, AlertCircle, SearchX,
+  Radio, Wifi, WifiOff, Plus, RotateCw, MoreHorizontal, QrCode, Power, Settings, AlertCircle, SearchX, Link2, AlertTriangle,
 } from 'lucide-react';
 import { StatCard } from '@/components/cards';
 import { StatusBadge } from '@/components/badge';
@@ -10,12 +10,13 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import {
-  DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger,
+  DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 
 type Instance = {
   id: string; name: string; status: string;
   phoneNumber?: string; contactName?: string; ownerUserId?: number; updatedAt?: string; token?: string;
+  captureMapped?: boolean; captureWid?: string | null;
 };
 
 function fmtDate(iso?: string) {
@@ -30,7 +31,7 @@ export default function ConnectionsView({
   searchQuery, setSearchQuery, statusFilter, setStatusFilter,
   onConnect, onDisconnect, onEditToken, canManage,
   canCreate, onCreate, onRefresh, isRefreshing,
-  loading, error, onRetry,
+  loading, error, onRetry, canMapCapture, onMapCapture,
 }: {
   instances: Instance[];
   rawCount: number;
@@ -50,6 +51,8 @@ export default function ConnectionsView({
   loading: boolean;
   error: string;
   onRetry: () => void;
+  canMapCapture?: boolean;
+  onMapCapture?: (i: Instance) => void;
 }) {
   const filtering = Boolean(searchQuery) || statusFilter !== 'ALL';
 
@@ -158,7 +161,14 @@ export default function ConnectionsView({
                 const manage = canManage(inst);
                 return (
                   <TableRow key={inst.id}>
-                    <TableCell className="font-medium text-foreground">{inst.contactName || inst.name}</TableCell>
+                    <TableCell className="font-medium text-foreground">
+                      {inst.contactName || inst.name}
+                      {canMapCapture && (
+                        inst.captureMapped
+                          ? <span className="ml-2 inline-flex items-center gap-1 align-middle text-[11px] text-success"><Link2 className="h-3 w-3" /> captura mapeada</span>
+                          : <span className="ml-2 inline-flex items-center gap-1 align-middle text-[11px] text-warning" title="Sem ponte de captura: gestor/usuário não recebem conversas"><AlertTriangle className="h-3 w-3" /> sem captura</span>
+                      )}
+                    </TableCell>
                     <TableCell className="font-mono text-xs text-muted-foreground">
                       {inst.phoneNumber ? inst.phoneNumber.split(':')[0] : '—'}
                     </TableCell>
@@ -189,6 +199,14 @@ export default function ConnectionsView({
                             <DropdownMenuItem onClick={() => onEditToken(inst)}>
                               <Settings className="h-4 w-4" /> Editar token
                             </DropdownMenuItem>
+                            {canMapCapture && onMapCapture && (
+                              <>
+                                <DropdownMenuSeparator />
+                                <DropdownMenuItem onClick={() => onMapCapture(inst)}>
+                                  <Link2 className="h-4 w-4" /> Mapear captura
+                                </DropdownMenuItem>
+                              </>
+                            )}
                           </DropdownMenuContent>
                         </DropdownMenu>
                       ) : (
