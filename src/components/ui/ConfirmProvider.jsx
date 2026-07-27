@@ -1,5 +1,6 @@
 import React, { createContext, useContext, useState, useCallback } from 'react';
 import { AlertTriangle, X } from 'lucide-react';
+import { Button } from './button';
 
 const ConfirmCtx = createContext(null);
 export const useConfirm = () => useContext(ConfirmCtx);
@@ -29,30 +30,37 @@ export function ConfirmProvider({ children }) {
   const o = state?.options;
   const warning = o?.variant === 'warning';
   const typedOk = !o?.requireTypedName || typed === o.requireTypedName;
+  // Âmbar (desativação reversível) usa o token `warning`; exclusão irreversível usa `destructive`.
   const accent = warning
-    ? { icon: 'text-amber-400', ring: 'bg-amber-500/10 border-amber-500/30', btn: 'bg-amber-500 hover:bg-amber-600 text-black' }
-    : { icon: 'text-rose-400', ring: 'bg-rose-500/10 border-rose-500/30', btn: 'bg-danger hover:bg-danger-hover text-white' };
+    ? { icon: 'text-warning', ring: 'bg-warning/10 border-warning/30' }
+    : { icon: 'text-destructive', ring: 'bg-destructive/10 border-destructive/30' };
 
   return (
     <ConfirmCtx.Provider value={confirm}>
       {children}
       {o && (
         <div className="fixed inset-0 z-[110] flex items-center justify-center bg-black/60 px-4">
-          <div className="w-full max-w-md bg-dark-card border border-dark-border rounded-2xl p-6">
-            <div className="flex items-start gap-3 mb-3">
-              <div className={`w-10 h-10 rounded-xl border flex items-center justify-center shrink-0 ${accent.ring}`}>
-                <AlertTriangle className={`w-5 h-5 ${accent.icon}`} />
+          <div className="w-full max-w-md rounded-lg border border-border bg-card p-6 shadow-[var(--shadow-modal)]">
+            <div className="mb-3 flex items-start gap-3">
+              <div className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border ${accent.ring}`}>
+                <AlertTriangle className={`h-5 w-5 ${accent.icon}`} />
               </div>
               <div className="flex-1 pt-0.5">
-                <h3 className="text-base font-bold font-outfit text-white">{o.title}</h3>
+                <h3 className="font-heading text-base font-semibold text-foreground">{o.title}</h3>
               </div>
-              <button onClick={() => finish(false)} className="text-slate-400 hover:text-white shrink-0"><X className="w-5 h-5" /></button>
+              <button
+                onClick={() => finish(false)}
+                aria-label="Fechar"
+                className="shrink-0 rounded-sm text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+              >
+                <X className="h-5 w-5" />
+              </button>
             </div>
 
-            {o.description && <p className="text-sm text-slate-300 mb-3">{o.description}</p>}
+            {o.description && <p className="mb-3 text-sm text-muted-foreground">{o.description}</p>}
 
             {Array.isArray(o.impact) && o.impact.length > 0 && (
-              <ul className="text-xs text-slate-400 bg-dark-input border border-dark-border rounded-lg p-3 mb-4 space-y-1.5">
+              <ul className="mb-4 space-y-1.5 rounded-md border border-border bg-muted/50 p-3 text-xs text-muted-foreground">
                 {o.impact.map((line, i) => (
                   <li key={i} className="flex gap-2"><span className={accent.icon}>•</span><span>{line}</span></li>
                 ))}
@@ -61,23 +69,32 @@ export function ConfirmProvider({ children }) {
 
             {o.requireTypedName && (
               <div className="mb-4">
-                <label className="block text-xs text-slate-300 mb-1.5">
-                  Para confirmar, digite <span className="font-semibold text-white">{o.requireTypedName}</span>
+                <label htmlFor="confirm-typed-name" className="mb-1.5 block text-xs text-foreground">
+                  Para confirmar, digite <span className="font-semibold">{o.requireTypedName}</span>
                 </label>
-                <input autoFocus value={typed} onChange={(e) => setTyped(e.target.value)}
-                  className="w-full bg-dark-input border border-dark-border rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-rose-500/60"
-                  placeholder={o.requireTypedName} />
+                <input
+                  id="confirm-typed-name"
+                  autoFocus
+                  value={typed}
+                  onChange={(e) => setTyped(e.target.value)}
+                  placeholder={o.requireTypedName}
+                  className="h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-xs transition-[color,box-shadow] placeholder:text-muted-foreground focus-visible:border-ring focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
+                />
               </div>
             )}
 
             <div className="flex justify-end gap-2">
-              <button onClick={() => finish(false)} className="px-4 py-2 text-xs font-semibold text-slate-300 hover:text-white">
+              <Button variant="ghost" size="sm" onClick={() => finish(false)}>
                 {o.cancelLabel || 'Cancelar'}
-              </button>
-              <button onClick={() => finish(true)} disabled={!typedOk}
-                className={`px-4 py-2 text-xs font-semibold rounded-lg disabled:opacity-40 disabled:cursor-not-allowed ${accent.btn}`}>
+              </Button>
+              <Button
+                variant={warning ? 'default' : 'destructive'}
+                size="sm"
+                onClick={() => finish(true)}
+                disabled={!typedOk}
+              >
                 {o.confirmLabel || 'Confirmar'}
-              </button>
+              </Button>
             </div>
           </div>
         </div>

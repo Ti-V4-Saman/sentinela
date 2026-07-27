@@ -1,53 +1,165 @@
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+@import "tailwindcss";
 
+/* Preserva o tema legado (cores dark-*, brand-*, danger-*, fontes) enquanto as
+   telas são portadas gradualmente. Telas antigas continuam idênticas. */
+@config "../tailwind.config.js";
+
+/* ==========================================================================
+   Design System Sentinela — tokens (docs/DESIGN-SYSTEM.md)
+   Marca: VINHO. 85% neutro / 10% primário / 5% semântico.
+   Tema padrão: light com conteúdo claro; sidebar escura FIXA (não troca no toggle).
+   ========================================================================== */
+
+:root {
+  /* Conteúdo — LIGHT */
+  --background: #F8FAFC;          /* neutral-50 */
+  --foreground: #101318;          /* neutral-900 */
+  --card: #FFFFFF;                /* neutral-0 */
+  --card-foreground: #101318;
+  --popover: #FFFFFF;
+  --popover-foreground: #101318;
+  --primary: #A32626;            /* vinho-500 (marca) */
+  --primary-foreground: #FFFFFF;
+  --secondary: #F2F4F7;          /* neutral-100 */
+  --secondary-foreground: #252C36;
+  --muted: #F2F4F7;
+  --muted-foreground: #667085;    /* neutral-400 */
+  --accent: #F2F4F7;
+  --accent-foreground: #252C36;
+  --border: #E4E7EC;             /* neutral-200 */
+  --input: #E4E7EC;
+  --ring: #A32626;
+
+  /* Semânticas */
+  --success: #22C55E;   --success-foreground: #FFFFFF;
+  --info: #3882F6;      --info-foreground: #FFFFFF;
+  --warning: #EAB308;   --warning-foreground: #101318;
+  --alert: #FB8922;     --alert-foreground: #101318;
+  --destructive: #DC2626; --destructive-foreground: #FFFFFF;
+  --ia: #7C3AED;        --ia-foreground: #FFFFFF;   /* roxo — conteúdo de IA */
+
+  /* Sidebar — DARK fixa (igual em light e dark) */
+  --sidebar: #0C1117;            /* neutral-950 */
+  --sidebar-foreground: #E4E7EC;
+  --sidebar-primary: #C45A5A;    /* vinho-400 (contraste no escuro) */
+  --sidebar-primary-foreground: #FFFFFF;
+  --sidebar-accent: #181D24;     /* neutral-800 */
+  --sidebar-accent-foreground: #F2F4F7;
+  --sidebar-border: #252C36;
+  --sidebar-ring: #C45A5A;
+
+  /* Radius e sombras */
+  --radius: 0.75rem; /* 12px (cards/modais/tabelas) */
+  --shadow-sm: 0 1px 2px rgba(16, 24, 40, 0.05);
+  --shadow-md: 0 4px 12px rgba(16, 24, 40, 0.08);
+  --shadow-lg: 0 12px 24px rgba(16, 24, 40, 0.10);
+}
+
+.dark {
+  /* Conteúdo — DARK (sidebar permanece a mesma escura, herdada do :root) */
+  --background: #0C1117;          /* neutral-950 */
+  --foreground: #F2F4F7;          /* neutral-100 */
+  --card: #101318;               /* neutral-900 */
+  --card-foreground: #F2F4F7;
+  --popover: #181D24;            /* neutral-800 */
+  --popover-foreground: #F2F4F7;
+  --primary: #C45A5A;            /* vinho-400 (mais claro no escuro) */
+  --primary-foreground: #FFFFFF;
+  --secondary: #181D24;
+  --secondary-foreground: #E4E7EC;
+  --muted: #181D24;
+  --muted-foreground: #98A2B3;    /* neutral-300 */
+  --accent: #252C36;             /* neutral-700 */
+  --accent-foreground: #F2F4F7;
+  --border: #252C36;
+  --input: #252C36;
+  --ring: #C45A5A;
+  --warning-foreground: #101318;
+  --alert-foreground: #101318;
+}
+
+/* Mapeia os tokens (CSS vars) para utilitários Tailwind (bg-*, text-*, border-*…). */
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+
+  --color-success: var(--success);
+  --color-success-foreground: var(--success-foreground);
+  --color-info: var(--info);
+  --color-info-foreground: var(--info-foreground);
+  --color-warning: var(--warning);
+  --color-warning-foreground: var(--warning-foreground);
+  --color-alert: var(--alert);
+  --color-alert-foreground: var(--alert-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-ia: var(--ia);
+  --color-ia-foreground: var(--ia-foreground);
+
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+
+  --font-sans: 'Inter', ui-sans-serif, system-ui, sans-serif;
+  --font-heading: 'Inter', ui-sans-serif, system-ui, sans-serif;
+  --font-mono: 'Geist Mono', ui-monospace, 'SFMono-Regular', monospace;
+
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+
+  --shadow-card: var(--shadow-md);
+  --shadow-dropdown: var(--shadow-lg);
+  --shadow-modal: var(--shadow-lg);
+}
+
+/* --------------------------------------------------------------------------
+   Base — via tokens (tema light padrão; dark por token com .dark).
+   -------------------------------------------------------------------------- */
 @layer base {
+  * { border-color: var(--border); }
   body {
-    background-color: #06110f;
-    color: #e2e8f0;
-    font-family: 'Inter', sans-serif;
+    background-color: var(--background);
+    color: var(--foreground);
+    font-family: var(--font-sans);
   }
 }
 
-/* Custom Scrollbar */
-::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
-}
+/* Scrollbar via tokens */
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 9999px; }
+::-webkit-scrollbar-thumb:hover { background: var(--muted-foreground); }
 
-::-webkit-scrollbar-track {
-  background: #06110f;
-}
-
-::-webkit-scrollbar-thumb {
-  background: #1a3a33;
-  border-radius: 4px;
-}
-
-::-webkit-scrollbar-thumb:hover {
-  background: #00c885;
-}
-
-/* Pulse Animation for Connected Status */
+/* Pulse Animation for Connected Status (legado) */
 @keyframes pulse-emerald {
-  0%, 100% {
-    box-shadow: 0 0 0 0 rgba(0, 200, 133, 0.4);
-  }
-  50% {
-    box-shadow: 0 0 0 8px rgba(0, 200, 133, 0);
-  }
+  0%, 100% { box-shadow: 0 0 0 0 rgba(0, 200, 133, 0.4); }
+  50% { box-shadow: 0 0 0 8px rgba(0, 200, 133, 0); }
 }
+.status-pulse-connected { animation: pulse-emerald 2s infinite; }
 
-.status-pulse-connected {
-  animation: pulse-emerald 2s infinite;
-}
-
-/* Card Glow Effect */
-.card-glow {
-  transition: all 0.25s ease-in-out;
-}
-
+/* Card Glow Effect (legado) */
+.card-glow { transition: all 0.25s ease-in-out; }
 .card-glow:hover {
   border-color: #1ed796;
   box-shadow: 0 4px 20px -2px rgba(0, 200, 133, 0.15);

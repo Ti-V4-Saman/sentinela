@@ -71,15 +71,10 @@ export const saveServerConfig = (serverUrl, apiKey, useMock) => {
 const API_BASE = '/api/instances';
 
 export const fetchInstancesApi = async () => {
-  try {
-    const res = await fetch(API_BASE, { headers: getAuthHeaders() });
-    if (res.status === 401) { handleUnauthorized(); return []; }
-    if (!res.ok) throw new Error('Failed to fetch instances');
-    return await res.json();
-  } catch (e) {
-    console.error('Error fetching from backend:', e);
-    return [];
-  }
+  const res = await fetch(API_BASE, { headers: getAuthHeaders() });
+  if (res.status === 401) { handleUnauthorized(); return []; }
+  if (!res.ok) throw new Error('Falha ao carregar as conexões');
+  return await res.json();
 };
 
 export const createInstanceApi = async (instance) => {
