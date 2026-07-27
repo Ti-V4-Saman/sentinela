@@ -65,20 +65,32 @@ describe('visibleCaptureWids (fonte da verdade: vínculos explícitos + capture_
   });
 });
 
-describe('messageTextSearch (FULLTEXT com fallback LIKE)', () => {
-  it('vazio → sem cláusula', () => { expect(messageTextSearch('m.text', '')).toEqual({ sql: '', params: [] }); });
-  it('termo curto (<3) → LIKE', () => {
+describe('messageTextSearch (caminhos separados: none | like | fulltext)', () => {
+  it('vazio → mode none (sem cláusula)', () => {
+    expect(messageTextSearch('m.text', '')).toEqual({ mode: 'none', sql: '', params: [] });
+  });
+  it('termo curto (<3) → mode like', () => {
     const r = messageTextSearch('m.text', 'ab');
-    expect(r.sql).toBe('m.text LIKE ?'); expect(r.params).toEqual(['%ab%']);
+    expect(r.mode).toBe('like'); expect(r.sql).toBe('m.text LIKE ?'); expect(r.params).toEqual(['%ab%']);
   });
-  it('termo normal → híbrido MATCH AGAINST (prefixo) OR LIKE', () => {
+  it('sem token compatível (só tokens curtos) → mode like', () => {
+    const r = messageTextSearch('m.text', 'a b c');
+    expect(r.mode).toBe('like'); expect(r.params).toEqual(['%a b c%']);
+  });
+  it('só operadores/sem conteúdo → mode like sobre o termo original', () => {
+    const r = messageTextSearch('m.text', '()+-');
+    expect(r.mode).toBe('like'); expect(r.params).toEqual(['%()+-%']);
+  });
+  it('termo normal → mode fulltext (MATCH AGAINST boolean, prefixo, SEM OR LIKE)', () => {
     const r = messageTextSearch('m.text', 'palavra');
-    expect(r.sql).toBe('(MATCH(m.text) AGAINST(? IN BOOLEAN MODE) OR m.text LIKE ?)');
-    expect(r.params).toEqual(['palavra*', '%palavra%']);
+    expect(r.mode).toBe('fulltext');
+    expect(r.sql).toBe('MATCH(m.text) AGAINST(? IN BOOLEAN MODE)');
+    expect(r.sql).not.toMatch(/LIKE/);
+    expect(r.params).toEqual(['palavra*']);
   });
-  it('operadores boolean são removidos (não quebram sintaxe)', () => {
-    const r = messageTextSearch('m.text', '+in-va(li)d');
-    expect(r.sql).toContain('MATCH(m.text) AGAINST(? IN BOOLEAN MODE)');
+  it('operadores boolean removidos, mantendo o token → fulltext', () => {
+    const r = messageTextSearch('m.text', '+palavra');
+    expect(r.mode).toBe('fulltext'); expect(r.params).toEqual(['palavra*']);
     expect(r.params[0]).not.toMatch(/[+\-()]/);
   });
 });

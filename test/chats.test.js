@@ -217,11 +217,14 @@ describe('GET /api/chats/:id/messages — thread, filtros, isolamento', () => {
       expect(r.body.messages[0].text).toContain('transcricao');
     });
   });
-  it('13. busca por palavra-chave nas mensagens (FULLTEXT)', async () => {
+  it('13. busca por palavra-chave nas mensagens filtra (caminho LIKE — curto)', async () => {
+    // Termo curto (<3) → caminho LIKE, que funciona em linhas não-commitadas.
+    // O caminho FULLTEXT (termo normal) é comprovado nos unit tests de messageTextSearch
+    // (o índice FTS do InnoDB não enxerga linhas não-commitadas na transação de teste).
     await withTx(async (c) => {
       await seed(c); const app = makeApp(c);
-      const r = await request(app).get('/api/chats/CH1/messages?search=mundo').set('Authorization', bearer(USER1));
-      expect(r.body.messages.map((m) => m.id)).toEqual(['m1']);
+      const r = await request(app).get('/api/chats/CH1/messages?search=nd').set('Authorization', bearer(USER1));
+      expect(r.body.messages.map((m) => m.id)).toEqual(['m1']); // 'ola mundo' contém 'nd'
     });
   });
   it('14. filtro por data na thread', async () => {
@@ -325,6 +328,174 @@ describe('PUT /api/instances/:id/capture-wid — ponte (superadmin/admin)', () =
       await seed(c); const app = makeApp(c);
       const r = await request(app).put('/api/instances/__i1__/capture-wid').set('Authorization', bearer(USER1)).send({ captureWid: 'W2' });
       expect(r.status).toBe(403);
+    });
+  });
+});
+
+// ---- Item 4: datas ----
+describe('GET /api/chats — datas normalizadas', () => {
+  it('date_to=YYYY-MM-DD inclui o dia INTEIRO (limite exclusivo no dia seguinte)', async () => {
+    await withTx(async (c) => {
+      await seed(c); const app = makeApp(c);
+      const r = await request(app).get('/api/chats?date_to=2026-07-01').set('Authorization', bearer(ADMIN));
+      expect(chatIds(r.body)).toEqual(['CH1']); // CH1 (07-01 10:02) incluída, apesar do date-only
+    });
+  });
+  it('date_to=YYYY-MM-DD do último dia inclui mensagens até o fim do dia', async () => {
+    await withTx(async (c) => {
+      await seed(c); const app = makeApp(c);
+      const r = await request(app).get('/api/chats?date_to=2026-07-03').set('Authorization', bearer(ADMIN));
+      expect(chatIds(r.body)).toEqual(['CH1', 'CH2', 'CH4']); // CH4 (07-03 08:00) incluída
+    });
+  });
+  it('datetime ISO é aceito', async () => {
+    await withTx(async (c) => {
+      await seed(c); const app = makeApp(c);
+      const r = await request(app).get('/api/chats?date_from=2026-07-02T00:00:00').set('Authorization', bearer(ADMIN));
+      expect(chatIds(r.body)).toEqual(['CH2', 'CH4']);
+    });
+  });
+  it('data inválida/ambígua → 400', async () => {
+    await withTx(async (c) => {
+      await seed(c); const app = makeApp(c);
+      expect((await request(app).get('/api/chats?date_from=01/07/2026').set('Authorization', bearer(ADMIN))).status).toBe(400);
+      expect((await request(app).get('/api/chats?date_to=2026-13-40').set('Authorization', bearer(ADMIN))).status).toBe(400);
+      expect((await request(app).get('/api/chats?date_from=ontem').set('Authorization', bearer(ADMIN))).status).toBe(400);
+    });
+  });
+  it('date_from > date_to → resultado vazio (sem erro)', async () => {
+    await withTx(async (c) => {
+      await seed(c); const app = makeApp(c);
+      const r = await request(app).get('/api/chats?date_from=2026-07-05&date_to=2026-07-01').set('Authorization', bearer(ADMIN));
+      expect(r.status).toBe(200); expect(r.body.chats).toEqual([]);
+    });
+  });
+});
+
+// ---- Item 2: resolução determinística do contato ----
+// tenant t1, admin 900050. Instância W1/i1. Contatos C1(Alice), C5(Eve).
+// CHR: recebida(C1) → enviada(sem contato)     → contato = Alice
+// CHI: recebida(C5) → interna(sem contato)      → contato = Eve
+// CHM: recebida(C1) → recebida(C5)              → contato = Eve (mais recente não-nulo)
+// CHN: enviada(sem) → interna(sem)              → contato = null
+async function seedContacts(conn) {
+  await conn.query("INSERT INTO tenants (id,name) VALUES (900001,'T1')");
+  await conn.query("INSERT INTO users (id,tenant_id,name,email,password_hash,role,status) VALUES (900050,900001,'Admin','a@__test__','x','admin','active')");
+  await conn.query("INSERT INTO instances (wid,tenant_id) VALUES ('W1',900001)");
+  await conn.query("INSERT INTO sentinela_instances (id,tenant_id,owner_user_id,name,token,capture_wid) VALUES ('__i1__',900001,900050,'A','t1','W1')");
+  await conn.query(`INSERT INTO contacts (id,tenant_id,phone,name) VALUES
+    ('C1',900001,'5531900000001','Alice'),('C5',900001,'5531900000005','Eve')`);
+  await conn.query(`INSERT INTO chats (id,tenant_id,title,is_group) VALUES
+    ('CHR',900001,NULL,0),('CHI',900001,NULL,0),('CHM',900001,NULL,1),('CHN',900001,NULL,0)`);
+  await conn.query(`INSERT INTO messages (id,tenant_id,chat_id,contact_id,text,type,from_me,from_internal,timestamp,wid) VALUES
+    ('r1',900001,'CHR','C1','oi','text',0,0,'2026-07-01 10:00:00','W1'),
+    ('r2',900001,'CHR',NULL,'resposta enviada','text',1,0,'2026-07-01 10:05:00','W1'),
+    ('i1',900001,'CHI','C5','oi eve','text',0,0,'2026-07-01 10:00:00','W1'),
+    ('i2',900001,'CHI',NULL,'nota interna','text',0,1,'2026-07-01 10:05:00','W1'),
+    ('mm1',900001,'CHM','C1','de alice','text',0,0,'2026-07-01 10:00:00','W1'),
+    ('mm2',900001,'CHM','C5','de eve','text',0,0,'2026-07-01 10:05:00','W1'),
+    ('n1',900001,'CHN',NULL,'enviada','text',1,0,'2026-07-01 10:00:00','W1'),
+    ('n2',900001,'CHN',NULL,'interna','text',0,1,'2026-07-01 10:05:00','W1')`);
+}
+const byId = (body) => Object.fromEntries(body.chats.map((c) => [c.id, c]));
+
+describe('GET /api/chats — contato determinístico (última msg pode não ter contato)', () => {
+  it('1. recebida-com-contato + enviada-sem-contato → mantém o contato', async () => {
+    await withTx(async (c) => {
+      await seedContacts(c); const app = makeApp(c);
+      const r = await request(app).get('/api/chats').set('Authorization', bearer(ADMIN));
+      expect(byId(r.body).CHR.contact).toMatchObject({ name: 'Alice', phone: '5531900000001' });
+      expect(byId(r.body).CHR.lastMessage.direction).toBe('outgoing'); // última msg real preservada
+    });
+  });
+  it('2. última mensagem interna sem contato → usa o contato anterior', async () => {
+    await withTx(async (c) => {
+      await seedContacts(c); const app = makeApp(c);
+      const r = await request(app).get('/api/chats').set('Authorization', bearer(ADMIN));
+      expect(byId(r.body).CHI.contact.name).toBe('Eve');
+    });
+  });
+  it('3. vários contatos não-nulos → o mais recente', async () => {
+    await withTx(async (c) => {
+      await seedContacts(c); const app = makeApp(c);
+      const r = await request(app).get('/api/chats').set('Authorization', bearer(ADMIN));
+      expect(byId(r.body).CHM.contact.name).toBe('Eve');
+    });
+  });
+  it('4. ausência total de contato → contato nulo', async () => {
+    await withTx(async (c) => {
+      await seedContacts(c); const app = makeApp(c);
+      const r = await request(app).get('/api/chats').set('Authorization', bearer(ADMIN));
+      expect(byId(r.body).CHN.contact).toEqual({ id: null, name: null, phone: null });
+    });
+  });
+  it('5. busca por nome/telefone funciona mesmo com última msg sem contato; sem multiplicar linhas', async () => {
+    await withTx(async (c) => {
+      await seedContacts(c); const app = makeApp(c);
+      const byName = await request(app).get('/api/chats?search=Alice').set('Authorization', bearer(ADMIN));
+      expect(chatIds(byName.body)).toEqual(['CHR']); expect(byName.body.total).toBe(1);
+      const byPhone = await request(app).get('/api/chats?search=5531900000001').set('Authorization', bearer(ADMIN));
+      expect(chatIds(byPhone.body)).toEqual(['CHR']);
+    });
+  });
+});
+
+// ---- Item 5: chat_id ambíguo entre tenants ----
+async function seedAmbiguous(conn) {
+  await conn.query("INSERT INTO tenants (id,name) VALUES (900001,'T1'),(900002,'T2')");
+  await conn.query(`INSERT INTO users (id,tenant_id,name,email,password_hash,role,status) VALUES
+    (900000,NULL,'Super','s@__test__','x','superadmin','active'),
+    (900050,900001,'Admin','a@__test__','x','admin','active')`);
+  await conn.query("INSERT INTO instances (wid,tenant_id) VALUES ('W1',900001),('W3',900002)");
+  await conn.query(`INSERT INTO sentinela_instances (id,tenant_id,owner_user_id,name,token,capture_wid) VALUES
+    ('__i1__',900001,900050,'A','t1','W1'),('__i3__',900002,900050,'C','t3','W3')`);
+  await conn.query(`INSERT INTO contacts (id,tenant_id,phone,name) VALUES
+    ('C1',900001,'5531900000001','Alice'),('C3',900002,'5531900000003','Carol')`);
+  await conn.query(`INSERT INTO chats (id,tenant_id,title,is_group) VALUES ('SAME',900001,'T1chat',0),('SAME',900002,'T2chat',0)`);
+  await conn.query(`INSERT INTO messages (id,tenant_id,chat_id,contact_id,text,type,from_me,from_internal,timestamp,wid) VALUES
+    ('a1',900001,'SAME','C1','no tenant 1','text',0,0,'2026-07-01 10:00:00','W1'),
+    ('a3',900002,'SAME','C3','no tenant 2','text',0,0,'2026-07-01 10:00:00','W3')`);
+}
+
+describe('GET /api/chats/:id/messages — chat_id ambíguo entre tenants (item 5)', () => {
+  it('superadmin: listagem traz refs distintos; detalhe por ref abre o chat certo', async () => {
+    await withTx(async (c) => {
+      await seedAmbiguous(c); const app = makeApp(c);
+      const list = await request(app).get('/api/chats').set('Authorization', bearer(SUPER));
+      const items = list.body.chats.filter((x) => x.id === 'SAME');
+      expect(items).toHaveLength(2);
+      const refs = items.map((x) => x.ref);
+      expect(new Set(refs).size).toBe(2); // refs distintos
+      const t1 = items.find((x) => x.title === 'T1chat');
+      const t2 = items.find((x) => x.title === 'T2chat');
+      const r1 = await request(app).get(`/api/chats/${t1.ref}/messages`).set('Authorization', bearer(SUPER));
+      expect(r1.body.messages.map((m) => m.text)).toEqual(['no tenant 1']);
+      const r2 = await request(app).get(`/api/chats/${t2.ref}/messages`).set('Authorization', bearer(SUPER));
+      expect(r2.body.messages.map((m) => m.text)).toEqual(['no tenant 2']);
+    });
+  });
+  it('superadmin com chat_id CRU ambíguo → 400 orientando usar ref', async () => {
+    await withTx(async (c) => {
+      await seedAmbiguous(c); const app = makeApp(c);
+      const r = await request(app).get('/api/chats/SAME/messages').set('Authorization', bearer(SUPER));
+      expect(r.status).toBe(400);
+    });
+  });
+  it('admin: chat_id cru resolve sem ambiguidade dentro do próprio tenant', async () => {
+    await withTx(async (c) => {
+      await seedAmbiguous(c); const app = makeApp(c);
+      const r = await request(app).get('/api/chats/SAME/messages').set('Authorization', bearer(ADMIN));
+      expect(r.status).toBe(200);
+      expect(r.body.messages.map((m) => m.text)).toEqual(['no tenant 1']); // só t1
+    });
+  });
+  it('ref de outro tenant para não-superadmin → 404 (RBAC revalida)', async () => {
+    await withTx(async (c) => {
+      await seedAmbiguous(c); const app = makeApp(c);
+      const list = await request(app).get('/api/chats').set('Authorization', bearer(SUPER));
+      const t2 = list.body.chats.find((x) => x.title === 'T2chat');
+      const r = await request(app).get(`/api/chats/${t2.ref}/messages`).set('Authorization', bearer(ADMIN)); // admin t1
+      expect(r.status).toBe(404);
     });
   });
 });

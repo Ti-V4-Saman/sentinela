@@ -46,26 +46,34 @@ export function conversationTenantFilter(actor, alias = '') {
   return { sql: `${alias}tenant_id = ?`, params: [actor.tenant_id] };
 }
 
-// Busca textual em mensagens. Estratégia:
-//  - termo vazio → sem cláusula.
-//  - termo curto (< innodb_ft_min_token_size, default 3) ou incompatível com o
-//    boolean mode → apenas LIKE (FULLTEXT ignora tokens curtos).
-//  - termo compatível → HÍBRIDO `MATCH(...) OR LIKE`: o FULLTEXT (boolean mode,
-//    prefixo *) é o caminho rápido/primário; o LIKE garante correção para casos que
-//    o FTS não cobre (substring, stopword) e para linhas ainda não commitadas
-//    (o índice FTS do InnoDB não enxerga linhas não-commitadas — relevante em testes).
+export const FT_MIN_TOKEN = 3; // alinhado ao innodb_ft_min_token_size (default do MySQL)
+
+// Busca textual em mensagens, em CAMINHOS SEPARADOS (nunca MATCH e LIKE simultâneos,
+// para não neutralizar o índice FULLTEXT). Retorna { mode, sql, params }:
+//  - mode 'none'     → termo vazio: sem cláusula.
+//  - mode 'like'     → termo curto (< FT_MIN_TOKEN) OU sem nenhum token compatível com
+//                      o boolean mode: apenas `LIKE` (o FULLTEXT ignora tokens curtos).
+//  - mode 'fulltext' → termo compatível: apenas `MATCH ... AGAINST (BOOLEAN MODE)` com prefixo *.
+//
+// Limitações (documentadas em docs/API-CONVERSAS.md):
+//  - substring NO MEIO da palavra não é garantida no caminho FULLTEXT (prefixo casa só o início).
+//  - stopwords e tamanho mínimo de token dependem da configuração do MySQL (innodb_ft_*).
+//  - busca curta cai em `LIKE` (pode ser mais cara: varredura por substring).
 // Valores sempre parametrizados (?), sem concatenação de SQL.
 export function messageTextSearch(column, term) {
   const raw = (term || '').trim();
-  if (!raw) return { sql: '', params: [] };
-  // Remove operadores do boolean mode para não quebrar a sintaxe do MATCH.
+  if (!raw) return { mode: 'none', sql: '', params: [] };
+  // Remove operadores do boolean mode; sobra apenas o "conteúdo" pesquisável.
   const cleaned = raw.replace(/[+\-><()~*"@]/g, ' ').replace(/\s+/g, ' ').trim();
-  const MIN_TOKEN = 3;
-  if (cleaned.length < MIN_TOKEN) {
-    return { sql: `${column} LIKE ?`, params: [`%${raw}%`] };
+  const longestToken = cleaned ? cleaned.split(' ').reduce((a, t) => Math.max(a, t.length), 0) : 0;
+
+  // Sem token compatível com FULLTEXT (curto/vazio após limpeza) → LIKE sobre o termo original.
+  if (longestToken < FT_MIN_TOKEN) {
+    return { mode: 'like', sql: `${column} LIKE ?`, params: [`%${raw}%`] };
   }
   return {
-    sql: `(MATCH(${column}) AGAINST(? IN BOOLEAN MODE) OR ${column} LIKE ?)`,
-    params: [`${cleaned}*`, `%${cleaned}%`],
+    mode: 'fulltext',
+    sql: `MATCH(${column}) AGAINST(? IN BOOLEAN MODE)`,
+    params: [`${cleaned}*`],
   };
 }

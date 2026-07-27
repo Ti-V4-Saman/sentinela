@@ -1,34 +1,48 @@
 // Índice FULLTEXT em messages.text para busca por palavra-chave (Fase 2).
 //
-// Pré-requisitos confirmados na inspeção:
-// - MySQL 8.1.0 + InnoDB → FULLTEXT suportado em InnoDB.
-// - messages.text = TEXT, nullable, utf8mb4 → compatível. NULL não é indexado nem casa em MATCH.
-// - Nenhum índice FULLTEXT existente em messages.
+// Pré-requisitos (inspeção): MySQL 8.1 + InnoDB; messages.text = TEXT nullable utf8mb4;
+// NULL não é indexado nem casa em MATCH. Uso: MATCH(text) AGAINST(? IN BOOLEAN MODE),
+// com fallback LIKE para termos curtos/incompatíveis (ver conversationScope.messageTextSearch).
 //
-// Uso na aplicação: `MATCH(text) AGAINST(? IN BOOLEAN MODE)` quando o termo for
-// compatível; fallback para `LIKE` em termos vazios/curtos (< innodb_ft_min_token_size,
-// default 3) ou com caracteres especiais do boolean mode. Ver server/routes/chats.js.
+// ⚠️ LOCK/JANELA: criar FULLTEXT em InnoDB reconstrói o índice; em produção EXIGE JANELA
+// DE MANUTENÇÃO APROVADA. NÃO EXECUTAR EM PRODUÇÃO sem janela.
 //
-// ⚠️ LOCK/JANELA: criar FULLTEXT em InnoDB reconstrói o índice e pode segurar a tabela
-// por tempo proporcional ao volume de `messages`. Em produção EXIGE JANELA DE MANUTENÇÃO
-// APROVADA. Em dev o banco está vazio → instantâneo. NÃO EXECUTAR EM PRODUÇÃO sem janela.
+// Defensiva: se existir um índice de mesmo nome que NÃO seja FULLTEXT sobre `text`, falha
+// explicitamente (não trata índice incompatível como implementação válida).
 
-async function hasFulltext(knex) {
+const TABLE = 'messages';
+const IDX = 'ft_messages_text';
+const COL = 'text';
+
+async function indexRows(knex) {
   const [rows] = await knex.raw(
-    `SELECT COUNT(*) AS c FROM information_schema.STATISTICS
-     WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'messages'
-       AND INDEX_NAME = 'ft_messages_text' AND INDEX_TYPE = 'FULLTEXT'`);
-  return rows[0].c > 0;
+    `SELECT INDEX_TYPE, COLUMN_NAME, SEQ_IN_INDEX FROM information_schema.STATISTICS
+     WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND INDEX_NAME = ? ORDER BY SEQ_IN_INDEX`,
+    [TABLE, IDX]);
+  return rows;
+}
+
+// Valida se as linhas representam um índice FULLTEXT sobre exatamente [text].
+function validateFulltextIndex(rows) {
+  if (!rows || rows.length === 0) return { exists: false, ok: false };
+  const cols = rows.map((r) => r.COLUMN_NAME);
+  const ok = rows.every((r) => r.INDEX_TYPE === 'FULLTEXT') && cols.length === 1 && cols[0] === COL;
+  return { exists: true, ok };
 }
 
 exports.up = async (knex) => {
-  if (!(await hasFulltext(knex))) {
-    await knex.raw('ALTER TABLE messages ADD FULLTEXT INDEX ft_messages_text (text)');
+  const v = validateFulltextIndex(await indexRows(knex));
+  if (!v.exists) {
+    await knex.raw(`ALTER TABLE ${TABLE} ADD FULLTEXT INDEX ${IDX} (${COL})`);
+  } else if (!v.ok) {
+    throw new Error(`Índice '${IDX}' já existe mas NÃO é FULLTEXT sobre \`${COL}\`. Corrija manualmente antes de migrar.`);
   }
 };
 
 exports.down = async (knex) => {
-  if (await hasFulltext(knex)) {
-    await knex.raw('ALTER TABLE messages DROP INDEX ft_messages_text');
+  if ((await indexRows(knex)).length > 0) {
+    await knex.raw(`ALTER TABLE ${TABLE} DROP INDEX ${IDX}`);
   }
 };
+
+exports._helpers = { validateFulltextIndex, indexRows };
