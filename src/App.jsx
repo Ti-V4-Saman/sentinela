@@ -17,6 +17,7 @@ import ClientsView from './views/ClientsView';
 import UsersView from './views/UsersView';
 import TeamsView from './views/TeamsView';
 import ConnectionsView from './views/ConnectionsView';
+import ConversationsView from './views/ConversationsView';
 import { MeusDadosDialog } from './components/account/meus-dados-dialog';
 import { EditTokenDialog } from './components/instances/edit-token-dialog';
 import { CaptureWidDialog } from './components/instances/capture-wid-dialog';
@@ -286,6 +287,8 @@ export default function App() {
           onRetry={loadInstances}
         />
       )}
+      {activeView === 'conversations' && <ConversationsView groupMode={false} />}
+      {activeView === 'groups' && <ConversationsView groupMode={true} />}
       {activeView === 'tenants' && <ClientsView />}
       {activeView === 'users' && <UsersView />}
       {activeView === 'teams' && <TeamsView />}
