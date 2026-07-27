@@ -2,13 +2,26 @@
 
 Itens conhecidos, adiados de propósito, com a fase a que pertencem.
 
-## Fase 2 — Busca
+## Fase 2 — Conversas
 
-- **Migration: índice FULLTEXT em `messages.text`.** A transcrição de áudio já vive em
-  `messages.text` (`type='audio'`), então a busca por palavra-chave cobre áudio — mas hoje
-  seria `LIKE` (scan). Ao implementar a busca de conteúdo, adicionar
-  `ALTER TABLE messages ADD FULLTEXT idx_messages_text (text)` (migration `.cjs`, reversível)
-  e usar `MATCH(text) AGAINST(...)`. Registrado em 2026-07-26.
+- ✅ **Migration FULLTEXT em `messages.text` — CRIADA E TESTADA LOCALMENTE (2026-07-27), NÃO
+  aplicada em produção.** `migrations/20260727130000_fulltext_messages_text.cjs` cria
+  `ft_messages_text` (InnoDB, MySQL 8.1). Reversível. **Aplicar em produção só em janela de
+  manutenção aprovada** (rebuild/lock proporcional ao volume). A busca de conversas usa
+  `MATCH(text) AGAINST(? IN BOOLEAN MODE)` com fallback `LIKE`.
+- ✅ **Migration ponte `sentinela_instances.capture_wid` — CRIADA E TESTADA LOCALMENTE
+  (2026-07-27), NÃO aplicada em produção.** `migrations/20260727120000_add_capture_wid_bridge.cjs`
+  (coluna nullable + `UNIQUE` global). Mesma exigência de **janela aprovada** em produção.
+- **Popular `team_instances` / `user_instances`.** Hoje não têm CRUD (só existência no schema).
+  Enquanto vazios, gestor/usuário veem **zero** conversas (fail-closed). Definir a gestão desses
+  vínculos (tela/endpoint) para habilitar a visibilidade explícita. Registrado em 2026-07-27.
+- **Contrato do pipeline para `capture_wid`.** O n8n/QuePasa precisa gravar `capture_wid` via
+  `PUT /api/instances/:id/capture-wid` (ver `docs/PIPELINE-CAPTURE-WID.md`). Não implementado no
+  pipeline nesta fase. Registrado em 2026-07-27.
+- **Drift de visibilidade de *management*.** `tenantScope.visibleInstanceIds` (usado por
+  `/api/instances`) resolve por propriedade (`owner_user_id`), divergindo do modelo documentado
+  (vínculos explícitos, usado pelas conversas). Reconciliar numa fase futura, sem quebrar os
+  testes/RBAC de gerenciamento. Registrado em 2026-07-27.
 
 ## Ferramentas / QA
 
