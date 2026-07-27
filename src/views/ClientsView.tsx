@@ -1,7 +1,7 @@
 import * as React from 'react';
 import {
   Building2, Plus, Pencil, Trash2, PauseCircle, PlayCircle, MoreHorizontal,
-  RotateCw, AlertCircle, SearchX, ChevronLeft, ChevronRight,
+  RotateCw, AlertCircle, SearchX, ChevronLeft, ChevronRight, Eye,
 } from 'lucide-react';
 import { StatusBadge } from '@/components/badge';
 import { SearchInput } from '@/components/input-group';
@@ -13,6 +13,7 @@ import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import { ClientFormDialog } from '@/components/clients/client-form-dialog';
+import { ClientDetailView } from './ClientDetailView';
 import { listTenants, createTenant, updateTenant, deleteTenant, listUsers, listTeams } from '../services/adminApi';
 import { fetchInstancesApi } from '../services/quepasaApi';
 import { useToast } from '../components/ui/ToastProvider';
@@ -38,6 +39,7 @@ export default function ClientsView() {
 
   const [formOpen, setFormOpen] = React.useState(false);
   const [editing, setEditing] = React.useState<Tenant | null>(null);
+  const [detail, setDetail] = React.useState<Tenant | null>(null);
 
   const load = React.useCallback(async () => {
     setLoading(true); setError('');
@@ -81,6 +83,8 @@ export default function ClientsView() {
 
   const openCreate = () => { setEditing(null); setFormOpen(true); };
   const openEdit = (t: Tenant) => { setEditing(t); setFormOpen(true); };
+
+  if (detail) return <ClientDetailView client={detail} onBack={() => setDetail(null)} />;
 
   const handleSubmit = async (values: { name: string; status?: string }, isEditing: boolean) => {
     const saved = isEditing
@@ -244,7 +248,11 @@ export default function ClientsView() {
                 return (
                   <TableRow key={t.id}>
                     <TableCell className="font-mono text-xs text-muted-foreground">#{t.id}</TableCell>
-                    <TableCell className="font-medium text-foreground">{t.name}</TableCell>
+                    <TableCell className="font-medium text-foreground">
+                      <button className="text-left hover:text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50" onClick={() => setDetail(t)}>
+                        {t.name}
+                      </button>
+                    </TableCell>
                     <TableCell>
                       <StatusBadge tone={active ? 'success' : 'warning'}>
                         {active ? 'Ativo' : 'Suspenso'}
@@ -258,6 +266,10 @@ export default function ClientsView() {
                           </Button>
                         </DropdownMenuTrigger>
                         <DropdownMenuContent align="end" className="w-48">
+                          <DropdownMenuItem onClick={() => setDetail(t)}>
+                            <Eye className="h-4 w-4" /> Ver detalhes
+                          </DropdownMenuItem>
+                          <DropdownMenuSeparator />
                           <DropdownMenuItem onClick={() => openEdit(t)}>
                             <Pencil className="h-4 w-4" /> Editar
                           </DropdownMenuItem>

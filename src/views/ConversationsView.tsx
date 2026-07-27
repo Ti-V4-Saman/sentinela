@@ -45,9 +45,10 @@ function fmtDate(iso?: string | null) {
   return d.toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
 }
 
-export default function ConversationsView({ groupMode }: { groupMode: boolean }) {
+export default function ConversationsView({ groupMode, tenantId }: { groupMode: boolean; tenantId?: number }) {
   const me = getUser();
-  const canFilterOrg = me?.role === 'superadmin' || me?.role === 'admin';
+  const scoped = tenantId != null; // drill-down: já escopado a um cliente
+  const canFilterOrg = !scoped && (me?.role === 'superadmin' || me?.role === 'admin');
 
   const [selected, setSelected] = React.useState<Chat | null>(null);
 
@@ -77,16 +78,18 @@ export default function ConversationsView({ groupMode }: { groupMode: boolean })
   const [users, setUsers] = React.useState<{ id: number; name: string; role: string }[]>([]);
 
   React.useEffect(() => {
+    if (scoped) return; // no drill-down os filtros de instância/equipe/usuário ficam ocultos
     listInstances().then((r: { id: string; name: string }[]) => setInstances(r)).catch(() => {});
     if (canFilterOrg) {
       listTeams().then(setTeams).catch(() => {});
       listUsers().then((u: { id: number; name: string; role: string }[]) => setUsers(u.filter((x) => x.role === 'usuario'))).catch(() => {});
     }
-  }, [canFilterOrg]);
+  }, [canFilterOrg, scoped]);
 
   const params = React.useMemo(() => ({
     is_group: groupMode ? 1 : 0,
     page, limit: PAGE_SIZE,
+    tenant_id: tenantId ?? undefined,
     search: dSearch || undefined,
     keyword: dKeyword || undefined,
     type: type !== 'ALL' ? type : undefined,
@@ -96,7 +99,7 @@ export default function ConversationsView({ groupMode }: { groupMode: boolean })
     user_id: userId !== 'ALL' ? userId : undefined,
     date_from: dateFrom || undefined,
     date_to: dateTo || undefined,
-  }), [groupMode, page, dSearch, dKeyword, type, identified, instanceId, teamId, userId, dateFrom, dateTo]);
+  }), [groupMode, page, tenantId, dSearch, dKeyword, type, identified, instanceId, teamId, userId, dateFrom, dateTo]);
 
   // Reset de página quando um filtro muda.
   React.useEffect(() => { setPage(1); }, [groupMode, dSearch, dKeyword, type, identified, instanceId, teamId, userId, dateFrom, dateTo]);
@@ -149,13 +152,15 @@ export default function ConversationsView({ groupMode }: { groupMode: boolean })
               <SelectItem value="0">Não identificados</SelectItem>
             </SelectContent>
           </Select>
-          <Select value={instanceId} onValueChange={setInstanceId}>
-            <SelectTrigger className="w-full sm:w-[190px]" aria-label="Instância"><SelectValue placeholder="Instância" /></SelectTrigger>
-            <SelectContent>
-              <SelectItem value="ALL">Todas as instâncias</SelectItem>
-              {instances.map((i) => <SelectItem key={i.id} value={i.id}>{i.name}</SelectItem>)}
-            </SelectContent>
-          </Select>
+          {!scoped && (
+            <Select value={instanceId} onValueChange={setInstanceId}>
+              <SelectTrigger className="w-full sm:w-[190px]" aria-label="Instância"><SelectValue placeholder="Instância" /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="ALL">Todas as instâncias</SelectItem>
+                {instances.map((i) => <SelectItem key={i.id} value={i.id}>{i.name}</SelectItem>)}
+              </SelectContent>
+            </Select>
+          )}
           {canFilterOrg && (
             <>
               <Select value={teamId} onValueChange={setTeamId}>
