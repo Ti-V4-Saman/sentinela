@@ -12,6 +12,7 @@ import { createProfileRouter } from './routes/profile.js';
 import { createChatsRouter } from './routes/chats.js';
 import { createContactTypesRouter } from './routes/contactTypes.js';
 import { createContactsRouter } from './routes/contacts.js';
+import { createClientsRouter } from './routes/clients.js';
 
 export function createApp(dbPool = pool) {
   const app = express();
@@ -35,6 +36,7 @@ export function createApp(dbPool = pool) {
   // /api/contact-types antes de /api/contacts (rotas distintas, sem colisão de prefixo).
   app.use('/api/contact-types', authenticate, createContactTypesRouter(dbPool));
   app.use('/api/contacts', authenticate, createContactsRouter(dbPool));
+  app.use('/api/clients', authenticate, createClientsRouter(dbPool));
 
   return app;
 }

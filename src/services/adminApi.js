@@ -69,6 +69,13 @@ export const identifyContact = (id, body) => req(`/api/contacts/${encodeURICompo
 export const clearContactIdentification = (id, body) => req(`/api/contacts/${encodeURIComponent(id)}/identify`, { method: 'DELETE', body: body ? JSON.stringify(body) : undefined });
 export const autoIdentifyContacts = (body) => req('/api/contacts/auto-identify', { method: 'POST', body: JSON.stringify(body || {}) });
 
+// ---- Drill-down de cliente (superadmin; admin no próprio tenant) ----
+export const getClientOverview = (id) => req(`/api/clients/${id}/overview`);
+export const listClientInstances = (id, params) => req(`/api/clients/${id}/instances${qs(params)}`);
+export const listClientUsers = (id, params) => req(`/api/clients/${id}/users${qs(params)}`);
+export const listClientTeams = (id, params) => req(`/api/clients/${id}/teams${qs(params)}`);
+export const listClientContacts = (id, params) => req(`/api/clients/${id}/contacts${qs(params)}`);
+
 // ---- instâncias (gestão) + ponte capture_wid ----
 export const listInstances = () => req('/api/instances');
 export const captureWidCandidates = (instanceId) => req(`/api/instances/${instanceId}/capture-candidates`);

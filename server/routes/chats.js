@@ -162,6 +162,11 @@ export function createChatsRouter(pool) {
       const tf = conversationTenantFilter(req.actor, 'm.');
       if (tf.sql) { cteWhere.push(tf.sql); cteArgs.push(...tf.params); }
       if (widScope !== 'ALL') { cteWhere.push(`m.wid IN (${widScope.map(() => '?').join(',')})`); cteArgs.push(...widScope); }
+      // Drill-down do superadmin: escopa a listagem a UM cliente (tenant). Ignorado para os demais
+      // papéis (já restritos ao próprio tenant por conversationTenantFilter).
+      if (req.actor.role === 'superadmin' && req.query.tenant_id) {
+        cteWhere.push('m.tenant_id = ?'); cteArgs.push(req.query.tenant_id);
+      }
       const cteClause = cteWhere.length ? `WHERE ${cteWhere.join(' AND ')}` : '';
       const contactClause = cteWhere.length
         ? `WHERE ${cteWhere.join(' AND ')} AND m.contact_id IS NOT NULL`
