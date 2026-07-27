@@ -109,7 +109,8 @@ export default function ContactsView() {
   const runAuto = async () => {
     try {
       const r = await autoIdentifyContacts(tid ? { tenantId: tid } : {});
-      toast.success('Autoidentificação concluída', `${r.propagated} contato(s) identificado(s) por telefone.`);
+      const conflictMsg = r.conflicts ? ` ${r.conflicts} telefone(s) com identidades manuais divergentes foram ignorados.` : '';
+      toast.success('Autoidentificação concluída', `${r.propagated} contato(s) identificado(s) por telefone.${conflictMsg}`);
       refresh();
     } catch (e) {
       toast.error('Não foi possível autoidentificar', friendlyError((e as Error).message));

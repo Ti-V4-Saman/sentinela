@@ -1,5 +1,6 @@
 import express from 'express';
 import { requireActor } from '../middleware/actor.js';
+import { withTransaction } from '../tx.js';
 
 const MAX_LIMIT = 100;
 const DEFAULT_LIMIT = 20;
@@ -28,11 +29,26 @@ const formatContact = (r, includeTenant) => ({
   messageCount: Number(r.message_count ?? 0),
 });
 
-// Propaga a identidade de um contato (origem) para os OUTROS contatos do mesmo tenant com o
-// MESMO telefone que NÃO estejam identificados manualmente. Nunca sobrescreve source='manual'.
-// Retorna o número de contatos afetados.
+// Chave de IDENTIDADE (normalizada) de uma linha manual — para detectar conflitos por telefone.
+const identityKey = (r) => JSON.stringify([r.display_name ?? null, r.contact_type_id ?? null, r.linked_user_id ?? null]);
+
+// Origem determinística de um telefone: mais recente por identified_at, desempatando por id DESC.
+// (Só é relevante quando as identidades são consistentes; ainda assim escolhemos de forma estável.)
+function pickOrigin(list) {
+  return list.slice().sort((a, b) => {
+    const ta = a.identified_at ? new Date(a.identified_at).getTime() : 0;
+    const tb = b.identified_at ? new Date(b.identified_at).getTime() : 0;
+    if (tb !== ta) return tb - ta;
+    return a.id < b.id ? 1 : a.id > b.id ? -1 : 0; // id DESC
+  })[0];
+}
+
+// Propaga a identidade de um contato (origem) para os OUTROS contatos do mesmo tenant com o MESMO
+// telefone que NÃO estejam identificados manualmente. Nunca sobrescreve source='manual'. Nunca
+// propaga uma identidade VAZIA (evita criar identificação 'auto' sem conteúdo). Retorna nº de linhas.
 async function propagateByPhone(conn, tenantId, phone, origin) {
   if (!phone) return 0;
+  if (!origin.display_name && !origin.contact_type_id && !origin.linked_user_id) return 0;
   const [r] = await conn.query(
     `UPDATE contacts
         SET display_name = ?, contact_type_id = ?, linked_user_id = ?,
@@ -53,11 +69,13 @@ export function createContactsRouter(pool) {
     return { tenantId: hint || null, forced: false };
   }
 
-  async function resolveContact(actor, id, hint) {
+  // db = conn (transação) ou pool. forUpdate=true → bloqueia a linha (SELECT ... FOR UPDATE).
+  async function resolveContact(db, actor, id, hint, forUpdate = false) {
     let sql = 'SELECT * FROM contacts WHERE id = ?'; const args = [id];
     if (actor.role !== 'superadmin') { sql += ' AND tenant_id = ?'; args.push(actor.tenant_id); }
     else if (hint) { sql += ' AND tenant_id = ?'; args.push(hint); }
-    const [rows] = await pool.query(sql, args);
+    if (forUpdate) sql += ' FOR UPDATE';
+    const [rows] = await db.query(sql, args);
     if (rows.length > 1) return { ambiguous: true };
     return { contact: rows[0] || null };
   }
@@ -79,6 +97,7 @@ export function createContactsRouter(pool) {
       const baseClause = base.length ? `WHERE ${base.join(' AND ')}` : '';
 
       // Contadores sobre o escopo-base (independente do filtro de status).
+      // "identificado" ⇔ identification_source IS NOT NULL (contrato — ver docs/IDENTIFICACAO-CONTATOS.md).
       const [countRows] = await pool.query(
         `SELECT COUNT(*) AS total,
                 SUM(c.identification_source IS NOT NULL) AS identified,
@@ -121,7 +140,7 @@ export function createContactsRouter(pool) {
     }
   });
 
-  // ---- PUT /:id/identify — identificação MANUAL (+ propagação por telefone) ----
+  // ---- PUT /:id/identify — identificação MANUAL (+ propagação por telefone), ATÔMICA ----
   router.put('/:id/identify', async (req, res) => {
     const body = req.body || {};
     const displayName = (body.displayName ?? '').toString().trim() || null;
@@ -130,50 +149,57 @@ export function createContactsRouter(pool) {
     if (!displayName && !contactTypeId && !linkedUserId) {
       return res.status(400).json({ error: 'Informe ao menos displayName, contactTypeId ou linkedUserId' });
     }
+    const hint = body.tenantId || req.query.tenantId;
     try {
-      const r = await resolveContact(req.actor, req.params.id, body.tenantId || req.query.tenantId);
-      if (r.ambiguous) return res.status(400).json({ error: 'contact_id ambíguo entre tenants; informe tenantId' });
-      if (!r.contact) return res.status(404).json({ error: 'Contato não encontrado' });
-      const c = r.contact;
+      // Tudo (revalidação + update principal + propagação + leitura) numa única transação:
+      // uma falha na propagação faz ROLLBACK, sem deixar o contato principal parcialmente alterado.
+      const out = await withTransaction(pool, async (conn) => {
+        const r = await resolveContact(conn, req.actor, req.params.id, hint, true); // FOR UPDATE
+        if (r.ambiguous) return { status: 400, error: 'contact_id ambíguo entre tenants; informe tenantId' };
+        if (!r.contact) return { status: 404, error: 'Contato não encontrado' };
+        const c = r.contact;
 
-      // Validações de mesmo-tenant (defesa em profundidade além das FKs).
-      if (contactTypeId) {
-        const [t] = await pool.query('SELECT id FROM contact_types WHERE id = ? AND tenant_id = ?', [contactTypeId, c.tenant_id]);
-        if (t.length === 0) return res.status(400).json({ error: 'Tipo de contato inválido para este cliente' });
-      }
-      if (linkedUserId) {
-        const [u] = await pool.query('SELECT id FROM users WHERE id = ? AND tenant_id = ?', [linkedUserId, c.tenant_id]);
-        if (u.length === 0) return res.status(400).json({ error: 'Usuário inválido para este cliente' });
-      }
+        if (contactTypeId) {
+          const [t] = await conn.query('SELECT id FROM contact_types WHERE id = ? AND tenant_id = ?', [contactTypeId, c.tenant_id]);
+          if (t.length === 0) return { status: 400, error: 'Tipo de contato inválido para este cliente' };
+        }
+        if (linkedUserId) {
+          const [u] = await conn.query('SELECT id FROM users WHERE id = ? AND tenant_id = ?', [linkedUserId, c.tenant_id]);
+          if (u.length === 0) return { status: 400, error: 'Usuário inválido para este cliente' };
+        }
 
-      await pool.query(
-        `UPDATE contacts SET display_name = ?, contact_type_id = ?, linked_user_id = ?,
-                identification_source = 'manual', identified_by_user_id = ?, identified_at = NOW()
-         WHERE tenant_id = ? AND id = ?`,
-        [displayName, contactTypeId || null, linkedUserId || null, req.actor.id, c.tenant_id, c.id]);
+        await conn.query(
+          `UPDATE contacts SET display_name = ?, contact_type_id = ?, linked_user_id = ?,
+                  identification_source = 'manual', identified_by_user_id = ?, identified_at = NOW()
+           WHERE tenant_id = ? AND id = ?`,
+          [displayName, contactTypeId || null, linkedUserId || null, req.actor.id, c.tenant_id, c.id]);
 
-      const origin = { id: c.id, display_name: displayName, contact_type_id: contactTypeId || null, linked_user_id: linkedUserId || null };
-      const propagated = await propagateByPhone(pool, c.tenant_id, c.phone, origin);
+        // Edição manual: a ação humana escolhe explicitamente a origem → propaga.
+        const origin = { id: c.id, display_name: displayName, contact_type_id: contactTypeId || null, linked_user_id: linkedUserId || null };
+        const propagated = await propagateByPhone(conn, c.tenant_id, c.phone, origin);
 
-      const [rows] = await pool.query(
-        `SELECT c.*, cty.name AS type_name, cty.color AS type_color, lu.name AS linked_user_name, ib.name AS identified_by_name,
-                (SELECT COUNT(*) FROM messages m WHERE m.tenant_id = c.tenant_id AND m.contact_id = c.id) AS message_count
-         FROM contacts c
-         LEFT JOIN contact_types cty ON cty.tenant_id = c.tenant_id AND cty.id = c.contact_type_id
-         LEFT JOIN users lu ON lu.id = c.linked_user_id
-         LEFT JOIN users ib ON ib.id = c.identified_by_user_id
-         WHERE c.tenant_id = ? AND c.id = ?`, [c.tenant_id, c.id]);
-      res.json({ contact: formatContact(rows[0], req.actor.role === 'superadmin'), propagated });
+        const [rows] = await conn.query(
+          `SELECT c.*, cty.name AS type_name, cty.color AS type_color, lu.name AS linked_user_name, ib.name AS identified_by_name,
+                  (SELECT COUNT(*) FROM messages m WHERE m.tenant_id = c.tenant_id AND m.contact_id = c.id) AS message_count
+           FROM contacts c
+           LEFT JOIN contact_types cty ON cty.tenant_id = c.tenant_id AND cty.id = c.contact_type_id
+           LEFT JOIN users lu ON lu.id = c.linked_user_id
+           LEFT JOIN users ib ON ib.id = c.identified_by_user_id
+           WHERE c.tenant_id = ? AND c.id = ?`, [c.tenant_id, c.id]);
+        return { status: 200, contact: formatContact(rows[0], req.actor.role === 'superadmin'), propagated };
+      });
+      if (out.error) return res.status(out.status).json({ error: out.error });
+      res.json({ contact: out.contact, propagated: out.propagated });
     } catch (e) {
       console.error('identify contact:', e);
       res.status(500).json({ error: 'Falha ao identificar o contato' });
     }
   });
 
-  // ---- DELETE /:id/identify — limpa a identificação deste contato ----
+  // ---- DELETE /:id/identify — limpa TODOS os campos de identificação deste contato ----
   router.delete('/:id/identify', async (req, res) => {
     try {
-      const r = await resolveContact(req.actor, req.params.id, req.body?.tenantId || req.query.tenantId);
+      const r = await resolveContact(pool, req.actor, req.params.id, req.body?.tenantId || req.query.tenantId);
       if (r.ambiguous) return res.status(400).json({ error: 'contact_id ambíguo entre tenants; informe tenantId' });
       if (!r.contact) return res.status(404).json({ error: 'Contato não encontrado' });
       const c = r.contact;
@@ -188,29 +214,36 @@ export function createContactsRouter(pool) {
     }
   });
 
-  // ---- POST /auto-identify — propaga TODAS as identificações manuais por telefone no tenant ----
+  // ---- POST /auto-identify — propaga as identificações manuais por telefone (lote), ATÔMICO ----
+  // Regra de conflito: se um telefone tem MAIS DE UMA identidade manual DIVERGENTE (display_name,
+  // contact_type_id ou linked_user_id diferentes), o telefone é AMBÍGUO — não propaga e conta como
+  // conflito. O lote nunca escolhe silenciosamente entre identidades manuais divergentes.
   router.post('/auto-identify', async (req, res) => {
     try {
       const scope = tenantScope(req.actor, req.body?.tenantId || req.query.tenantId);
       if (!scope.forced && !scope.tenantId) return res.status(400).json({ error: 'tenantId é obrigatório' });
       const tenantId = scope.tenantId;
-      // Candidatas: a identificação manual MAIS RECENTE de cada telefone. Empate de telefone
-      // é resolvido em JS (uma origem por telefone), evitando GROUP BY com only_full_group_by.
-      const [rows] = await pool.query(
-        `SELECT c1.id, c1.phone, c1.display_name, c1.contact_type_id, c1.linked_user_id
-         FROM contacts c1
-         WHERE c1.tenant_id = ? AND c1.identification_source = 'manual' AND c1.phone IS NOT NULL
-           AND c1.identified_at = (
-             SELECT MAX(c2.identified_at) FROM contacts c2
-             WHERE c2.tenant_id = c1.tenant_id AND c2.phone = c1.phone AND c2.identification_source = 'manual')`,
-        [tenantId]);
-      const byPhone = new Map();
-      for (const o of rows) if (!byPhone.has(o.phone)) byPhone.set(o.phone, o);
-      let propagated = 0;
-      for (const o of byPhone.values()) {
-        propagated += await propagateByPhone(pool, tenantId, o.phone, o);
-      }
-      res.json({ success: true, phones: byPhone.size, propagated });
+      const result = await withTransaction(pool, async (conn) => {
+        const [rows] = await conn.query(
+          `SELECT id, phone, display_name, contact_type_id, linked_user_id, identified_at
+           FROM contacts
+           WHERE tenant_id = ? AND identification_source = 'manual' AND phone IS NOT NULL
+           ORDER BY phone, identified_at DESC, id DESC`, [tenantId]);
+        const groups = new Map();
+        for (const r of rows) {
+          if (!groups.has(r.phone)) groups.set(r.phone, []);
+          groups.get(r.phone).push(r);
+        }
+        let propagated = 0, conflicts = 0;
+        for (const [phone, list] of groups) {
+          const distinct = new Set(list.map(identityKey));
+          if (distinct.size > 1) { conflicts += 1; continue; } // identidades manuais divergentes → ambíguo
+          propagated += await propagateByPhone(conn, tenantId, phone, pickOrigin(list));
+        }
+        return { phones: groups.size, propagated, conflicts };
+      });
+      // Resposta só com contadores — sem expor dados sensíveis dos contatos.
+      res.json({ success: true, ...result });
     } catch (e) {
       console.error('auto-identify:', e);
       res.status(500).json({ error: 'Falha na autoidentificação' });
@@ -220,4 +253,4 @@ export function createContactsRouter(pool) {
   return router;
 }
 
-export const _internals = { propagateByPhone };
+export const _internals = { propagateByPhone, identityKey, pickOrigin };

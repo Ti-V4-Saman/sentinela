@@ -1,5 +1,6 @@
 import express from 'express';
 import { requireActor } from '../middleware/actor.js';
+import { withTransaction } from '../tx.js';
 
 // Tons semânticos permitidos = tones do StatusBadge (mapeados a tokens no front, nunca cor hardcoded).
 export const VALID_COLORS = ['neutral', 'info', 'ia', 'success', 'warning', 'alert', 'destructive'];
@@ -97,14 +98,23 @@ export function createContactTypesRouter(pool) {
     }
   });
 
-  // DELETE — desvincula os contatos (SET contact_type_id=NULL) e remove o tipo.
-  // A FK é RESTRICT (inclui tenant_id NOT NULL, não permite SET NULL automático).
+  // DELETE — desvincula os contatos (SET contact_type_id=NULL) e remove o tipo, ATOMICAMENTE.
+  // A FK é RESTRICT (inclui tenant_id NOT NULL, não permite SET NULL automático): o desvínculo e a
+  // exclusão precisam acontecer na mesma transação (uma falha no DELETE não pode deixar os contatos
+  // já desvinculados). Só toca contatos do MESMO tenant do tipo.
   router.delete('/:id', async (req, res) => {
     try {
-      const t = await typeInScope(req.actor, req.params.id);
-      if (!t) return res.status(404).json({ error: 'Tipo não encontrado' });
-      await pool.query('UPDATE contacts SET contact_type_id = NULL WHERE tenant_id = ? AND contact_type_id = ?', [t.tenant_id, t.id]);
-      await pool.query('DELETE FROM contact_types WHERE id = ?', [t.id]);
+      const out = await withTransaction(pool, async (conn) => {
+        const [rows] = await conn.query('SELECT * FROM contact_types WHERE id = ? FOR UPDATE', [req.params.id]);
+        const t = rows[0];
+        if (!t || (req.actor.role !== 'superadmin' && Number(t.tenant_id) !== Number(req.actor.tenant_id))) {
+          return { status: 404 };
+        }
+        await conn.query('UPDATE contacts SET contact_type_id = NULL WHERE tenant_id = ? AND contact_type_id = ?', [t.tenant_id, t.id]);
+        await conn.query('DELETE FROM contact_types WHERE id = ?', [t.id]);
+        return { status: 200 };
+      });
+      if (out.status === 404) return res.status(404).json({ error: 'Tipo não encontrado' });
       res.json({ success: true, message: 'Tipo removido' });
     } catch (e) {
       console.error('delete contact type:', e);

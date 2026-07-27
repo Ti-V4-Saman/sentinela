@@ -12,7 +12,11 @@ Identificadores nos exemplos são fictícios.
 ## Modelo de dados
 
 Migration `20260728120000_contact_identification.cjs` (reversível, defensiva). **Não executada em
-produção** (exige janela de manutenção aprovada — ALTER/ADD CONSTRAINT).
+produção** (exige janela de manutenção aprovada — ALTER/ADD CONSTRAINT). A migration não só verifica a
+**existência** de tabela/coluna/índice/FK, mas **valida a definição** de objetos de mesmo nome (colunas
+e ordem de índice; colunas locais, tabela/colunas de destino e regras `ON DELETE/UPDATE` de FK;
+tipo/nulabilidade/enum de coluna) — um objeto incompatível **falha com mensagem explícita** em vez de
+ser tratado como concluído. Validadores puros cobertos por unit tests em `test/migrations.test.js`.
 
 ### `contact_types` (categorias por tenant)
 | Coluna | Tipo | Observação |
@@ -40,22 +44,51 @@ antes de remover.
 
 ---
 
+## Conceito de "identificado"
+
+Um contato é **identificado** ⇔ `identification_source IS NOT NULL`. Como a rota manual sempre grava
+`source='manual'`, um contato com **apenas** nome, **apenas** tipo ou **apenas** usuário vinculado já é
+identificado. Invariantes garantidas:
+- **Nunca** existe registro com `identification_source` preenchido e os três campos de identidade
+  (`display_name`, `contact_type_id`, `linked_user_id`) nulos — a rota manual exige ao menos um; a
+  propagação tem **guarda** que recusa origem totalmente vazia.
+- A **limpeza** zera TODOS os campos (`display_name`, `contact_type_id`, `linked_user_id`,
+  `identification_source`, `identified_by_user_id`, `identified_at`).
+
 ## Regras de identificação
 
 - **Manual** (`PUT /api/contacts/:id/identify`): grava `display_name`/`contact_type_id`/`linked_user_id`
   informados (campos ausentes → NULL — semântica de **substituição** total do estado de identificação),
   `identification_source='manual'`, `identified_by_user_id=ator`, `identified_at=NOW()`. Exige ao menos
   um dos três campos. Tipo/usuário de **outro tenant** → `400` (defesa em profundidade além das FKs).
+  **Atômica**: revalidação (`FOR UPDATE`) + update do principal + propagação rodam em uma transação
+  (conexão dedicada). Falha na propagação faz `ROLLBACK` — o contato principal nunca fica parcialmente
+  alterado.
 - **Autoidentificação por telefone**: ao identificar manualmente um contato com telefone `P`, a mesma
-  identidade (`display_name`, tipo, usuário) é **propagada** aos OUTROS contatos do mesmo tenant com o
-  **mesmo telefone** que **não** estejam identificados manualmente — marcados como `source='auto'`,
-  `identified_by=NULL`. Também disponível em lote via `POST /api/contacts/auto-identify`.
+  identidade é **propagada** aos OUTROS contatos do mesmo tenant com o **mesmo telefone** que **não**
+  estejam identificados manualmente — marcados como `source='auto'`, `identified_by=NULL`. Na edição
+  manual a ação humana escolhe explicitamente a origem, então propaga.
+- **Lote determinístico** (`POST /api/contacts/auto-identify`, transação):
+  - agrupa por telefone; a origem é escolhida de forma **determinística** (`identified_at DESC, id DESC`);
+  - **conflito**: se um telefone tem mais de uma identificação **manual** com valores divergentes de
+    `display_name`, `contact_type_id` ou `linked_user_id`, o telefone é **ambíguo** — **não** propaga e
+    é contado em `conflicts`. O lote nunca escolhe silenciosamente entre identidades manuais divergentes;
+  - retorna só contadores `{phones, propagated, conflicts}`. Um telefone em conflito **não** impede a
+    propagação dos demais.
 - **Proteção da identificação manual**: `auto` **nunca** sobrescreve `source='manual'`. Só preenche
   contatos com `source IS NULL` ou `source='auto'`.
 - **Telefones duplicados**: o casamento é por telefone **exato** (string armazenada). Contato sem
   telefone não propaga nem recebe propagação.
 - **Limpeza** (`DELETE /api/contacts/:id/identify`): zera os campos deste contato (volta a não
   identificado). Não cascateia para as cópias `auto` (limpeza é por contato, explícita).
+
+## Atomicidade
+
+`PUT /:id/identify`, `POST /auto-identify` e `DELETE /api/contact-types/:id` (desvincular contatos +
+excluir o tipo) usam **conexão dedicada + transação** (`BEGIN`/`COMMIT`/`ROLLBACK`, liberação da
+conexão no `finally`). A resposta só é enviada após o commit. No harness de testes (conexão única já em
+transação) o helper `withTransaction` executa direto sobre a conexão do teste — o rollback do teste
+garante o isolamento.
 
 ---
 
@@ -75,7 +108,7 @@ antes de remover.
 | GET | `/` | Paginada. Filtros: `search` (nome/exibição/telefone), `status` (`identified`/`unidentified`), `type_id`. super: `?tenantId=`. Resposta inclui `counts {total, identified, unidentified}` (sobre o escopo-base, independem do filtro de status). |
 | PUT | `/:id/identify` | `{displayName?, contactTypeId?, linkedUserId?, tenantId?}`. Retorna `{contact, propagated}`. |
 | DELETE | `/:id/identify` | Limpa a identificação. |
-| POST | `/auto-identify` | `{tenantId?}`. Propaga todas as manuais por telefone. Retorna `{phones, propagated}`. |
+| POST | `/auto-identify` | `{tenantId?}`. Propaga as manuais por telefone. Retorna **apenas contadores** `{phones, propagated, conflicts}` (sem dados sensíveis). |
 
 `:id` é o `contacts.id` (varchar). Para **superadmin**, um mesmo id pode existir em vários tenants →
 informe `tenantId` (senão `400` ambíguo). Para os demais, o tenant do ator resolve.

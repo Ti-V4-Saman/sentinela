@@ -5,7 +5,7 @@ import { getPool, applyMigrations, withTx } from './helpers/db.js';
 import { signToken } from '../server/auth/jwt.js';
 import { authenticate } from '../server/middleware/authenticate.js';
 import { createContactTypesRouter } from '../server/routes/contactTypes.js';
-import { createContactsRouter } from '../server/routes/contacts.js';
+import { createContactsRouter, _internals } from '../server/routes/contacts.js';
 import { createChatsRouter } from '../server/routes/chats.js';
 
 function makeApp(conn) {
@@ -287,6 +287,125 @@ describe('contacts — autoidentificação em lote', () => {
       const [rows] = await c.query("SELECT identification_source, display_name FROM contacts WHERE tenant_id=900001 AND id='K2'");
       expect(rows[0].identification_source).toBe('auto');
       expect(rows[0].display_name).toBe('Alice VIP');
+    });
+  });
+});
+
+// Bloco 3 — conflito de múltiplas identificações manuais para o mesmo telefone.
+// No seed base: K1/K2 têm 5531900000001 e K3 tem 5531900000002. K5 recebe em P1, K6 em P2.
+async function seedConf(c) {
+  await seed(c);
+  await c.query(`INSERT INTO contacts (id,tenant_id,phone,name) VALUES
+    ('K5',900001,'5531900000001','Ana Recebe'),
+    ('K6',900001,'5531900000002','Bob Recebe')`);
+}
+const setManual = (c, id, { name = null, typeId = null, userId = null, at = '2026-07-25 10:00:00' }) =>
+  c.query(`UPDATE contacts SET display_name=?, contact_type_id=?, linked_user_id=?,
+             identification_source='manual', identified_by_user_id=900050, identified_at=?
+           WHERE tenant_id=900001 AND id=?`, [name, typeId, userId, at, id]);
+const autoId = (app) => request(app).post('/api/contacts/auto-identify').set('Authorization', bearer(ADMIN1)).send({});
+const srcOf = async (c, id) => (await c.query(`SELECT identification_source s, display_name d FROM contacts WHERE tenant_id=900001 AND id='${id}'`))[0][0];
+
+describe('contacts — conflito de identificações manuais por telefone', () => {
+  it('1. duas manuais IDÊNTICAS no mesmo telefone → propaga (sem conflito)', async () => {
+    await withTx(async (c) => {
+      await seedConf(c); const app = makeApp(c);
+      await setManual(c, 'K1', { name: 'Ana' }); await setManual(c, 'K2', { name: 'Ana' });
+      const r = await autoId(app);
+      expect(r.body).toMatchObject({ conflicts: 0, propagated: 1 }); // K5 recebe
+      expect(await srcOf(c, 'K5')).toMatchObject({ s: 'auto', d: 'Ana' });
+    });
+  });
+  it('2. nomes diferentes → conflito, sem propagação', async () => {
+    await withTx(async (c) => {
+      await seedConf(c); const app = makeApp(c);
+      await setManual(c, 'K1', { name: 'Ana A' }); await setManual(c, 'K2', { name: 'Ana B' });
+      const r = await autoId(app);
+      expect(r.body).toMatchObject({ conflicts: 1, propagated: 0 });
+      expect((await srcOf(c, 'K5')).s).toBeNull(); // K5 intacto
+    });
+  });
+  it('3. tipos diferentes → conflito', async () => {
+    await withTx(async (c) => {
+      await seedConf(c); const app = makeApp(c);
+      const t1 = (await makeType(app, ADMIN1, 'Lead')).body.id;
+      const t2 = (await makeType(app, ADMIN1, 'Cliente')).body.id;
+      await setManual(c, 'K1', { name: 'Ana', typeId: t1 }); await setManual(c, 'K2', { name: 'Ana', typeId: t2 });
+      const r = await autoId(app);
+      expect(r.body).toMatchObject({ conflicts: 1, propagated: 0 });
+    });
+  });
+  it('4. usuários vinculados diferentes → conflito', async () => {
+    await withTx(async (c) => {
+      await seedConf(c); const app = makeApp(c);
+      await setManual(c, 'K1', { name: 'Ana', userId: 900050 }); await setManual(c, 'K2', { name: 'Ana', userId: 900011 });
+      const r = await autoId(app);
+      expect(r.body).toMatchObject({ conflicts: 1, propagated: 0 });
+    });
+  });
+  it('5. empate de timestamp com identidades divergentes → determinístico (conflito), estável entre execuções', async () => {
+    await withTx(async (c) => {
+      await seedConf(c); const app = makeApp(c);
+      await setManual(c, 'K1', { name: 'Ana A', at: '2026-07-25 10:00:00' });
+      await setManual(c, 'K2', { name: 'Ana B', at: '2026-07-25 10:00:00' }); // MESMO timestamp
+      const r1 = await autoId(app);
+      const r2 = await autoId(app);
+      expect(r1.body).toMatchObject({ conflicts: 1, propagated: 0 });
+      expect(r2.body).toMatchObject({ conflicts: 1, propagated: 0 }); // idêntico → determinístico
+      expect((await srcOf(c, 'K5')).s).toBeNull();
+    });
+  });
+  it('6. contato manual nunca é alterado pelo lote', async () => {
+    await withTx(async (c) => {
+      await seedConf(c); const app = makeApp(c);
+      await setManual(c, 'K1', { name: 'Ana A' }); await setManual(c, 'K2', { name: 'Ana B' });
+      await autoId(app);
+      expect(await srcOf(c, 'K1')).toMatchObject({ s: 'manual', d: 'Ana A' });
+      expect(await srcOf(c, 'K2')).toMatchObject({ s: 'manual', d: 'Ana B' });
+    });
+  });
+  it('7. telefone sem conflito continua propagando mesmo com outro telefone em conflito', async () => {
+    await withTx(async (c) => {
+      await seedConf(c); const app = makeApp(c);
+      await setManual(c, 'K1', { name: 'Ana A' }); await setManual(c, 'K2', { name: 'Ana B' }); // P1 conflito
+      await setManual(c, 'K3', { name: 'Bob' }); // P2 sem conflito → propaga p/ K6
+      const r = await autoId(app);
+      expect(r.body).toMatchObject({ conflicts: 1, propagated: 1 });
+      expect(await srcOf(c, 'K6')).toMatchObject({ s: 'auto', d: 'Bob' });
+    });
+  });
+});
+
+describe('contacts — invariantes de "identificado" (Bloco 5)', () => {
+  it('propagateByPhone NÃO propaga origem totalmente vazia (guarda)', async () => {
+    await withTx(async (c) => {
+      await seedConf(c);
+      // Telefone COM candidatos reais (K1/K2/K5); a guarda impede propagar identidade vazia.
+      const n = await _internals.propagateByPhone(c, 900001, '5531900000001', { id: 'K1', display_name: null, contact_type_id: null, linked_user_id: null });
+      expect(n).toBe(0);
+      expect((await srcOf(c, 'K5')).s).toBeNull(); // ninguém virou 'auto' vazio
+    });
+  });
+  it('nunca há registro com source preenchido e identidade totalmente nula', async () => {
+    await withTx(async (c) => {
+      await seed(c); const app = makeApp(c);
+      const t = (await makeType(app, ADMIN1, 'Lead')).body.id;
+      await request(app).put('/api/contacts/K1/identify').set('Authorization', bearer(ADMIN1)).send({ contactTypeId: t }); // só tipo
+      await request(app).put('/api/contacts/K3/identify').set('Authorization', bearer(ADMIN1)).send({ linkedUserId: 900011 }); // só usuário
+      const [bad] = await c.query(`SELECT COUNT(*) n FROM contacts WHERE tenant_id=900001
+        AND identification_source IS NOT NULL AND display_name IS NULL AND contact_type_id IS NULL AND linked_user_id IS NULL`);
+      expect(bad[0].n).toBe(0);
+    });
+  });
+  it('limpar identificação zera TODOS os campos', async () => {
+    await withTx(async (c) => {
+      await seed(c); const app = makeApp(c);
+      const t = (await makeType(app, ADMIN1, 'Lead')).body.id;
+      await request(app).put('/api/contacts/K1/identify').set('Authorization', bearer(ADMIN1)).send({ displayName: 'Ana', contactTypeId: t, linkedUserId: 900011 });
+      await request(app).delete('/api/contacts/K1/identify').set('Authorization', bearer(ADMIN1));
+      const [rows] = await c.query(`SELECT display_name, contact_type_id, linked_user_id, identification_source, identified_by_user_id, identified_at
+        FROM contacts WHERE tenant_id=900001 AND id='K1'`);
+      expect(Object.values(rows[0]).every((v) => v === null)).toBe(true);
     });
   });
 });

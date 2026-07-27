@@ -3,6 +3,7 @@ import knexFactory from 'knex';
 import knexConfig from '../knexfile.cjs';
 import bridge from '../migrations/20260727120000_add_capture_wid_bridge.cjs';
 import fulltext from '../migrations/20260727130000_fulltext_messages_text.cjs';
+import contactIdent from '../migrations/20260728120000_contact_identification.cjs';
 
 let knex;
 beforeAll(async () => { knex = knexFactory(knexConfig.development); await knex.migrate.latest(); });
@@ -43,6 +44,76 @@ describe('migration FULLTEXT — validateFulltextIndex', () => {
   });
   it('mesmo nome, coluna errada → incompatível', () => {
     expect(validateFulltextIndex([{ INDEX_TYPE: 'FULLTEXT', COLUMN_NAME: 'type' }])).toEqual({ exists: true, ok: false });
+  });
+});
+
+// ---- Validadores da migration de identificação (Fase 4) ----
+describe('migration identificação — validadores defensivos', () => {
+  const { validateIndexColumns, validateForeignKey, validateColumn } = contactIdent._helpers;
+
+  describe('validateIndexColumns', () => {
+    it('sem linhas → não existe', () => {
+      expect(validateIndexColumns([], ['tenant_id', 'id'])).toEqual({ exists: false, ok: false });
+    });
+    it('colunas corretas na ordem → ok', () => {
+      const rows = [{ COLUMN_NAME: 'tenant_id', SEQ_IN_INDEX: 1 }, { COLUMN_NAME: 'id', SEQ_IN_INDEX: 2 }];
+      expect(validateIndexColumns(rows, ['tenant_id', 'id'])).toEqual({ exists: true, ok: true });
+    });
+    it('mesmo nome, colunas erradas → incompatível', () => {
+      const rows = [{ COLUMN_NAME: 'tenant_id', SEQ_IN_INDEX: 1 }, { COLUMN_NAME: 'name', SEQ_IN_INDEX: 2 }];
+      expect(validateIndexColumns(rows, ['tenant_id', 'id'])).toEqual({ exists: true, ok: false });
+    });
+    it('mesmo nome, ordem trocada → incompatível', () => {
+      const rows = [{ COLUMN_NAME: 'id', SEQ_IN_INDEX: 1 }, { COLUMN_NAME: 'tenant_id', SEQ_IN_INDEX: 2 }];
+      expect(validateIndexColumns(rows, ['tenant_id', 'id']).ok).toBe(false);
+    });
+  });
+
+  describe('validateForeignKey', () => {
+    const spec = { columns: ['tenant_id', 'contact_type_id'], referencedTable: 'contact_types', referencedColumns: ['tenant_id', 'id'], onDelete: 'RESTRICT', onUpdate: 'RESTRICT' };
+    const good = [
+      { COLUMN_NAME: 'tenant_id', ORDINAL_POSITION: 1, REFERENCED_TABLE_NAME: 'contact_types', REFERENCED_COLUMN_NAME: 'tenant_id', DELETE_RULE: 'RESTRICT', UPDATE_RULE: 'RESTRICT' },
+      { COLUMN_NAME: 'contact_type_id', ORDINAL_POSITION: 2, REFERENCED_TABLE_NAME: 'contact_types', REFERENCED_COLUMN_NAME: 'id', DELETE_RULE: 'RESTRICT', UPDATE_RULE: 'RESTRICT' },
+    ];
+    it('sem linhas → não existe', () => {
+      expect(validateForeignKey([], spec)).toEqual({ exists: false, ok: false });
+    });
+    it('FK correta → ok', () => {
+      expect(validateForeignKey(good, spec)).toEqual({ exists: true, ok: true });
+    });
+    it('tabela de destino errada → incompatível', () => {
+      const bad = good.map((r) => ({ ...r, REFERENCED_TABLE_NAME: 'users' }));
+      expect(validateForeignKey(bad, spec)).toEqual({ exists: true, ok: false });
+    });
+    it('coluna de destino errada → incompatível', () => {
+      const bad = [good[0], { ...good[1], REFERENCED_COLUMN_NAME: 'name' }];
+      expect(validateForeignKey(bad, spec).ok).toBe(false);
+    });
+    it('regra ON DELETE errada → incompatível', () => {
+      const bad = good.map((r) => ({ ...r, DELETE_RULE: 'SET NULL' }));
+      expect(validateForeignKey(bad, spec).ok).toBe(false);
+    });
+  });
+
+  describe('validateColumn', () => {
+    it('coluna ausente → não existe', () => {
+      expect(validateColumn(undefined, { type: 'varchar(255)', nullable: true })).toEqual({ exists: false, ok: false });
+    });
+    it('tipo e nulabilidade corretos → ok', () => {
+      expect(validateColumn({ COLUMN_TYPE: 'varchar(255)', IS_NULLABLE: 'YES' }, { type: 'varchar(255)', nullable: true })).toEqual({ exists: true, ok: true });
+    });
+    it('enum idêntico → ok', () => {
+      expect(validateColumn({ COLUMN_TYPE: "enum('manual','auto')", IS_NULLABLE: 'YES' }, { type: "enum('manual','auto')", nullable: true }).ok).toBe(true);
+    });
+    it('tipo incompatível → incompatível', () => {
+      expect(validateColumn({ COLUMN_TYPE: 'int', IS_NULLABLE: 'YES' }, { type: 'bigint unsigned', nullable: true }).ok).toBe(false);
+    });
+    it('nulabilidade incompatível → incompatível', () => {
+      expect(validateColumn({ COLUMN_TYPE: 'varchar(255)', IS_NULLABLE: 'NO' }, { type: 'varchar(255)', nullable: true }).ok).toBe(false);
+    });
+    it('enum com valores diferentes → incompatível', () => {
+      expect(validateColumn({ COLUMN_TYPE: "enum('manual','auto','x')", IS_NULLABLE: 'YES' }, { type: "enum('manual','auto')", nullable: true }).ok).toBe(false);
+    });
   });
 });
 
