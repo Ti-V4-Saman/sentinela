@@ -139,6 +139,56 @@ export function createInstancesRouter(pool) {
     }
   });
 
+  // PUT /:id/capture-wid — vincula a instância gerenciada à instância de CAPTURA
+  // (instances.wid) usada em messages.wid. Fase 2. Restrito a admin/superadmin;
+  // NÃO editável pelo frontend comum nem pelo dono. Valida tenant e unicidade global.
+  router.put('/:id/capture-wid', async (req, res) => {
+    const { id } = req.params;
+    try {
+      const actor = await loadActor(pool, req.auth.userId);
+      if (!actor || actor.status !== 'active') {
+        return res.status(401).json({ error: 'Sessão inválida ou usuário desativado' });
+      }
+      if (!isAdmin(actor.role)) return res.status(403).json({ error: 'Sem permissão' });
+
+      const [rows] = await pool.query('SELECT tenant_id FROM sentinela_instances WHERE id = ?', [id]);
+      if (rows.length === 0) return res.status(404).json({ error: 'Instância não encontrada' });
+      const inst = rows[0];
+      if (actor.role !== 'superadmin' && Number(inst.tenant_id) !== Number(actor.tenant_id)) {
+        return res.status(404).json({ error: 'Instância não encontrada' }); // não vaza existência
+      }
+
+      const captureWid = req.body?.captureWid ?? null;
+
+      // Limpar a ponte (revoga acesso operacional de gestor/usuário imediatamente).
+      if (captureWid === null || captureWid === '') {
+        await pool.query('UPDATE sentinela_instances SET capture_wid = NULL WHERE id = ?', [id]);
+        return res.json({ id, captureWid: null });
+      }
+      if (typeof captureWid !== 'string') return res.status(400).json({ error: 'captureWid inválido' });
+
+      // A instância de captura deve existir e pertencer ao MESMO tenant.
+      const [cap] = await pool.query('SELECT tenant_id FROM instances WHERE wid = ?', [captureWid]);
+      if (cap.length === 0) return res.status(404).json({ error: 'Instância de captura (wid) não encontrada' });
+      if (Number(cap[0].tenant_id) !== Number(inst.tenant_id)) {
+        return res.status(403).json({ error: 'Instância de captura pertence a outro cliente' });
+      }
+
+      try {
+        await pool.query('UPDATE sentinela_instances SET capture_wid = ? WHERE id = ?', [captureWid, id]);
+      } catch (e) {
+        if (e.code === 'ER_DUP_ENTRY') {
+          return res.status(409).json({ error: 'Este wid de captura já está vinculado a outra instância' });
+        }
+        throw e;
+      }
+      res.json({ id, captureWid });
+    } catch (e) {
+      console.error('set capture_wid:', e);
+      res.status(500).json({ error: 'Falha ao vincular instância de captura' });
+    }
+  });
+
   // Instância NUNCA é excluída (histórico usado em pesquisas/relatórios).
   // Para "remover" alguém, desative o usuário — a instância continua ativa.
   // (Sem rota DELETE por decisão de produto.)

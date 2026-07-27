@@ -9,6 +9,7 @@ import { createTenantsRouter } from './routes/tenants.js';
 import { createUsersRouter } from './routes/users.js';
 import { createTeamsRouter } from './routes/teams.js';
 import { createProfileRouter } from './routes/profile.js';
+import { createChatsRouter } from './routes/chats.js';
 
 export function createApp(dbPool = pool) {
   const app = express();
@@ -28,6 +29,7 @@ export function createApp(dbPool = pool) {
   app.use('/api/users/me', authenticate, createProfileRouter(dbPool));
   app.use('/api/users', authenticate, createUsersRouter(dbPool));
   app.use('/api/teams', authenticate, createTeamsRouter(dbPool));
+  app.use('/api/chats', authenticate, createChatsRouter(dbPool));
 
   return app;
 }
