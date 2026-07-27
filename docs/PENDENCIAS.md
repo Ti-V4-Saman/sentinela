@@ -19,12 +19,21 @@ Itens conhecidos, adiados de propósito, com a fase a que pertencem.
   ~1460px e não renderiza largura mobile de fato, então a responsividade das telas portadas foi
   evidenciada apenas por breakpoints Tailwind (`sm:`/`md:`). Refazer a validação visual mobile
   quando o ambiente permitir redimensionamento real. Não bloqueia o próximo bloco. Registrado em 2026-07-26.
+- **Teste de integração do toast de erro.** O `ToastProvider` (portado para tokens) renderiza os 4
+  tipos pelo mesmo bloco JSX; o tipo `error` (destructive + `XCircle`) foi verificado por código, mas
+  **não exercitado ao vivo** — nas telas alcançáveis os erros de backend surgem inline, o QuePasa
+  falha graciosamente e backend-down pendura o proxy. Adicionar um teste que force `toast.error` e
+  valide o render (ícone/token/`role="status"`). Registrado em 2026-07-27.
+- **Teste do estado final de conexão via QR.** O passo "conexão concluída" (step 3) do
+  `connect-dialog` não foi exercitado ao vivo porque o servidor QuePasa respondeu `503` no ambiente
+  de teste. Validar com QuePasa disponível (ou mock que retorne `Connected`) que o polling detecta,
+  finaliza e fecha o modal. Registrado em 2026-07-27.
 
 ## Pré-produção (Design System / deploy)
 
 - Sanitizar/rotacionar segredos reais (token QuePasa, webhook n8n `n8.v4saman.com`, e-mail
   interno, URL do servidor) hoje em `src/services/quepasaApi.js`, `nginx.conf`, `.env.example`,
   `docker-compose.yml` e no histórico git — trocar por credenciais novas no deploy de produção.
-- Ao concluir o porte de TODAS as telas para tokens, remover `class="dark"` fixo do `index.html`
-  e as classes legadas (`bg-dark-*`, `brand-emerald`, `font-outfit`) para o tema padrão light
-  (com sidebar escura fixa) entrar em vigor. Ver `docs/DESIGN-SYSTEM.md` §8/§12.
+- ✅ **CONCLUÍDO (2026-07-27):** `class="dark"` fixo removido do `index.html` e as classes legadas
+  (`bg-dark-*`, `brand-emerald`, `font-outfit`) eliminadas de todo o frontend alcançável. Tema padrão
+  light com sidebar escura fixa em vigor; dark via tokens. Não há mais paleta visual legada alcançável.

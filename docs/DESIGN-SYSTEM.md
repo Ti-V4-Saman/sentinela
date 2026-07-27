@@ -359,3 +359,26 @@ Proibições absolutas: cor hardcoded, azul/roxo usados como decoração em vez 
 semântica (`info`/`ia`), recriar do zero componente que já existe no design
 system, usar qualquer paleta que não seja a vinho/neutra da seção 3.
 ```
+
+## 14. Status da migração (registro — não normativo)
+
+Registro do estado real da migração visual do frontend. Não altera nenhuma decisão
+das seções 1–13; apenas documenta o que já foi concluído (branch `feat/design-system`).
+
+**Infraestrutura ativa:**
+- **Tailwind v4** (via `@tailwindcss/postcss`, `@config`, `@theme inline`) — camada de tokens em `src/index.css`.
+- **TypeScript gradual** configurado (`tsconfig.json`, alias `@/*`, `allowJs`) — telas/componentes novos em `.tsx`, JS legado convive.
+- **shadcn/ui** instalado (style new-york, baseColor neutral, cssVariables) — primitivos em `src/components/ui/`.
+
+**Portado (usa exclusivamente tokens do DS):**
+- Shell visual (sidebar escura fixa + drawer mobile), Login.
+- Telas: **Conexões, Clientes, Usuários, Equipes**.
+- Modais: token, criar/conectar conexão (QR), criar/editar cliente, criar/editar usuário,
+  criar/editar equipe, vínculos de equipe (Tabs), Meus Dados, Servidor QuePasa.
+- **Toast** global e **confirmação** (`ConfirmProvider`) tokenizados.
+
+**Tema:** padrão **light com sidebar escura fixa**; **dark funciona via tokens** (classe `.dark` no `<html>`,
+persistida em `localStorage`). Não existe mais **paleta visual legada alcançável** (`bg-dark-*`,
+`brand-emerald`, `font-outfit` etc. eliminados; sem `class="dark"` fixo).
+
+**Concluído em** 2026-07-27. Pendências não bloqueantes em `docs/PENDENCIAS.md`.
