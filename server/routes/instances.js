@@ -15,6 +15,9 @@ const formatInstance = (row, { includeToken = false } = {}) => ({
   contactName: row.contact_name || '',
   avatarUrl: row.avatar_url || '',
   webhookUrl: row.webhook_url || '',
+  // Ponte de captura (Fase 2): mapeada = conversas de gestor/usuário ficam acessíveis.
+  captureWid: row.capture_wid || null,
+  captureMapped: !!row.capture_wid,
   createdAt: row.created_at,
   updatedAt: row.updated_at,
 });
@@ -186,6 +189,37 @@ export function createInstancesRouter(pool) {
     } catch (e) {
       console.error('set capture_wid:', e);
       res.status(500).json({ error: 'Falha ao vincular instância de captura' });
+    }
+  });
+
+  // GET /:id/capture-candidates — wids de captura (instances.wid) do MESMO tenant ainda
+  // não vinculados a OUTRA instância gerenciada. Popula o picker de mapeamento manual.
+  router.get('/:id/capture-candidates', async (req, res) => {
+    const { id } = req.params;
+    try {
+      const actor = await loadActor(pool, req.auth.userId);
+      if (!actor || actor.status !== 'active') {
+        return res.status(401).json({ error: 'Sessão inválida ou usuário desativado' });
+      }
+      if (!isAdmin(actor.role)) return res.status(403).json({ error: 'Sem permissão' });
+
+      const [rows] = await pool.query('SELECT tenant_id, capture_wid FROM sentinela_instances WHERE id = ?', [id]);
+      if (rows.length === 0) return res.status(404).json({ error: 'Instância não encontrada' });
+      const inst = rows[0];
+      if (actor.role !== 'superadmin' && Number(inst.tenant_id) !== Number(actor.tenant_id)) {
+        return res.status(404).json({ error: 'Instância não encontrada' });
+      }
+      // Só wids do tenant da instância; exclui os já usados por OUTRA instância (mantém o atual).
+      const [cands] = await pool.query(
+        `SELECT i.wid FROM instances i
+         WHERE i.tenant_id = ?
+           AND i.wid NOT IN (SELECT capture_wid FROM sentinela_instances WHERE capture_wid IS NOT NULL AND id <> ?)
+         ORDER BY i.wid`,
+        [inst.tenant_id, id]);
+      res.json({ current: inst.capture_wid || null, candidates: cands.map((r) => r.wid) });
+    } catch (e) {
+      console.error('capture candidates:', e);
+      res.status(500).json({ error: 'Falha ao listar candidatos de captura' });
     }
   });
 
