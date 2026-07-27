@@ -145,6 +145,8 @@ export function createChatsRouter(pool) {
       const { page, limit, offset } = parsePaging(req.query);
       const isGroup = parseBool(req.query.is_group);
       if (Number.isNaN(isGroup)) return res.status(400).json({ error: 'is_group inválido (use 0 ou 1)' });
+      const identified = parseBool(req.query.identified);
+      if (Number.isNaN(identified)) return res.status(400).json({ error: 'identified inválido (use 0 ou 1)' });
       const dFrom = parseDateBound(req.query.date_from, false);
       const dTo = parseDateBound(req.query.date_to, true);
       const derr = dateBoundError(dFrom) || dateBoundError(dTo);
@@ -187,6 +189,9 @@ export function createChatsRouter(pool) {
       if (isGroup !== null) { outWhere.push('c.is_group = ?'); outArgs.push(isGroup); }
       if (search) { outWhere.push('(ct.name LIKE ? OR ct.phone LIKE ?)'); outArgs.push(`%${search}%`, `%${search}%`); }
       if (lastType) { outWhere.push('msg.type = ?'); outArgs.push(lastType); } // tipo da ÚLTIMA mensagem
+      // Filtro por status de identificação do contato resolvido da conversa (Fase 4).
+      if (identified === 1) outWhere.push('ct.identification_source IS NOT NULL');
+      else if (identified === 0) outWhere.push('(ct.id IS NULL OR ct.identification_source IS NULL)');
       if (dFrom) { outWhere.push(`msg.last_ts ${dFrom.op} ?`); outArgs.push(dFrom.value); }
       if (dTo) { outWhere.push(`msg.last_ts ${dTo.op} ?`); outArgs.push(dTo.value); }
       if (keyword) {
@@ -208,6 +213,7 @@ export function createChatsRouter(pool) {
         JOIN chats c ON c.tenant_id = msg.tenant_id AND c.id = msg.chat_id
         LEFT JOIN contact_pick cp ON cp.tenant_id = msg.tenant_id AND cp.chat_id = msg.chat_id
         LEFT JOIN contacts ct ON ct.tenant_id = msg.tenant_id AND ct.id = cp.contact_id
+        LEFT JOIN contact_types cty ON cty.tenant_id = ct.tenant_id AND cty.id = ct.contact_type_id
         LEFT JOIN sentinela_instances si ON si.capture_wid = msg.wid`;
 
       const [countRows] = await pool.query(
@@ -221,6 +227,8 @@ export function createChatsRouter(pool) {
                 msg.text AS last_message_text, msg.type AS last_message_type,
                 msg.from_me AS last_from_me, msg.timestamp AS last_activity, msg.message_count,
                 ct.id AS contact_id, ct.name AS contact_name, ct.phone AS contact_phone,
+                ct.display_name AS contact_display_name, ct.identification_source AS contact_ident_src,
+                ct.contact_type_id AS contact_type_id, cty.name AS contact_type_name, cty.color AS contact_type_color,
                 si.id AS instance_id, si.name AS instance_name
          ${joins}
          WHERE ${outClause}
@@ -231,9 +239,16 @@ export function createChatsRouter(pool) {
       const chats = rows.map((r) => ({
         id: r.chat_id,
         ref: encodeRef(Number(r.tenant_id), r.chat_id), // usar no detalhe (sem ambiguidade)
-        title: r.title || r.contact_name || null,
+        title: r.title || r.contact_display_name || r.contact_name || null,
         isGroup: Number(r.is_group) === 1,
-        contact: { id: r.contact_id || null, name: r.contact_name || null, phone: r.contact_phone || null },
+        contact: {
+          id: r.contact_id || null,
+          name: r.contact_name || null,
+          displayName: r.contact_display_name || null,
+          phone: r.contact_phone || null,
+          identified: r.contact_ident_src != null,
+          type: r.contact_type_id ? { id: r.contact_type_id, name: r.contact_type_name || null, color: r.contact_type_color || null } : null,
+        },
         instance: { id: r.instance_id || null, name: r.instance_name || null },
         lastMessage: {
           text: r.last_message_text,
@@ -319,9 +334,12 @@ export function createChatsRouter(pool) {
       // dois sentidos), garantindo páginas sem sobreposição nem buracos.
       const [rows] = await pool.query(
         `SELECT m.id, m.chat_id, m.type, m.text, m.from_me, m.from_internal, m.timestamp,
-                m.contact_id, ct.name AS contact_name, ct.phone AS contact_phone
+                m.contact_id, ct.name AS contact_name, ct.phone AS contact_phone,
+                ct.display_name AS contact_display_name,
+                ct.contact_type_id AS contact_type_id, cty.name AS contact_type_name, cty.color AS contact_type_color
          FROM messages m
          LEFT JOIN contacts ct ON ct.tenant_id = m.tenant_id AND ct.id = m.contact_id
+         LEFT JOIN contact_types cty ON cty.tenant_id = m.tenant_id AND cty.id = ct.contact_type_id
          WHERE ${clause}
          ORDER BY m.timestamp DESC, m.id DESC
          LIMIT ? OFFSET ?`,
@@ -338,7 +356,13 @@ export function createChatsRouter(pool) {
         fromInternal: Number(r.from_internal) === 1,
         sender: Number(r.from_me) === 1
           ? { self: true }
-          : { contactId: r.contact_id || null, name: r.contact_name || null, phone: r.contact_phone || null },
+          : {
+            contactId: r.contact_id || null,
+            name: r.contact_name || null,
+            displayName: r.contact_display_name || null,
+            phone: r.contact_phone || null,
+            type: r.contact_type_id ? { id: r.contact_type_id, name: r.contact_type_name || null, color: r.contact_type_color || null } : null,
+          },
         at: r.timestamp,
       }));
 

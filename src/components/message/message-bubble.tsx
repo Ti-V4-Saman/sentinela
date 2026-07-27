@@ -1,6 +1,7 @@
 import * as React from 'react';
 import { StickyNote } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { ContactTypeBadge } from '@/components/contacts/contact-type-badge';
 import { MessageContent } from './media';
 
 export type ThreadMessage = {
@@ -10,7 +11,10 @@ export type ThreadMessage = {
   direction: 'incoming' | 'outgoing';
   fromMe?: boolean;
   fromInternal?: boolean;
-  sender?: { self?: boolean; name?: string | null; phone?: string | null; contactId?: string | null };
+  sender?: {
+    self?: boolean; name?: string | null; displayName?: string | null; phone?: string | null; contactId?: string | null;
+    type?: { id: number; name: string; color?: string | null } | null;
+  };
   at?: string;
 };
 
@@ -46,7 +50,7 @@ export function MessageBubble({
     );
   }
 
-  const senderName = message.sender?.name || (message.sender?.phone ? message.sender.phone : 'Contato');
+  const senderName = message.sender?.displayName || message.sender?.name || (message.sender?.phone ? message.sender.phone : 'Contato');
 
   return (
     <div className={cn('flex px-1 py-0.5', outgoing ? 'justify-end' : 'justify-start')}>
@@ -57,7 +61,10 @@ export function MessageBubble({
         )}
       >
         {isGroup && !outgoing && showSender && (
-          <div className="mb-0.5 text-[11px] font-semibold text-primary">{senderName}</div>
+          <div className="mb-0.5 flex items-center gap-1.5">
+            <span className="text-[11px] font-semibold text-primary">{senderName}</span>
+            {message.sender?.type && <ContactTypeBadge type={message.sender.type} />}
+          </div>
         )}
         <MessageContent type={message.type} text={message.text} />
         <div className={cn('mt-1 text-[10px] text-muted-foreground', outgoing ? 'text-right' : 'text-left')}>

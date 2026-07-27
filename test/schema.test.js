@@ -138,3 +138,24 @@ describe('índices de performance', () => {
     expect(await indexExists('chats','idx_chats_tenant_title')).toBe(true);
   });
 });
+
+describe('identificação de contatos (Fase 4)', () => {
+  it('contact_types existe com colunas esperadas e UNIQUE (tenant_id, id)', async () => {
+    expect(await tableExists('contact_types')).toBe(true);
+    expect(await colNames('contact_types')).toEqual(expect.arrayContaining(
+      ['id', 'tenant_id', 'name', 'color', 'created_at', 'updated_at']));
+    expect(await indexExists('contact_types', 'uq_ctype_tenant_id')).toBe(true);
+  });
+  it('contacts ganhou as colunas de identificação', async () => {
+    expect(await colNames('contacts')).toEqual(expect.arrayContaining(
+      ['display_name', 'contact_type_id', 'linked_user_id', 'identification_source', 'identified_by_user_id', 'identified_at']));
+  });
+  it('fk_contact_type é COMPOSTA (tenant_id, contact_type_id) → contact_types (tenant-safe)', async () => {
+    const [rows] = await pool.query(
+      `SELECT COLUMN_NAME, REFERENCED_TABLE_NAME FROM information_schema.KEY_COLUMN_USAGE
+       WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='contacts' AND CONSTRAINT_NAME='fk_contact_type'
+       ORDER BY ORDINAL_POSITION`);
+    expect(rows.map((r) => r.COLUMN_NAME)).toEqual(['tenant_id', 'contact_type_id']);
+    expect(rows.every((r) => r.REFERENCED_TABLE_NAME === 'contact_types')).toBe(true);
+  });
+});

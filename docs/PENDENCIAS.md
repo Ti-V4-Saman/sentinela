@@ -28,10 +28,10 @@ Itens conhecidos, adiados de propósito, com a fase a que pertencem.
 
 ## Fase 3 — UI de Conversas
 
-- **Filtro por "status de identificação" — ADIADO PARA A FASE 4.** O plano previa filtrar conversas
-  por contato identificado/não identificado, mas o schema atual **não tem** coluna de identificação em
-  `contacts` (será criada na Fase 4: `display_name`/`contact_type_id`/`linked_user_id`/…). O filtro e a
-  coluna correspondente entram junto com a identificação. Registrado em 2026-07-27.
+- ✅ **Filtro por "status de identificação" — CONCLUÍDO NA FASE 4 (2026-07-27).** `GET /api/chats?identified=0|1`
+  filtra conversas por contato identificado/não identificado; disponível na UI (filtro "Todos os contatos").
+  As colunas de identificação foram criadas em `contacts` (migration `20260728120000`). Ver
+  `docs/IDENTIFICACAO-CONTATOS.md`.
 - **"Responsável" (equipe/usuário) por conversa não é exibido na listagem.** É possível **filtrar** por
   equipe/usuário (`team_id`/`user_id`), mas a resposta de `GET /api/chats` não carrega o responsável
   resolvido de cada linha (o contrato só traz a instância). Exibir a coluna exigiria estender a API para
@@ -44,6 +44,20 @@ Itens conhecidos, adiados de propósito, com a fase a que pertencem.
 - **Sem prévia de mídia (herdado da Fase 2).** O schema só guarda `type` + `text`/transcrição; áudio/
   imagem/vídeo/documento renderizam como rótulo + ícone + legenda/transcrição ("sem prévia"). Prévia real
   depende de URL de mídia no pipeline. Registrado em 2026-07-27.
+
+## Fase 4 — Identificação de contatos
+
+- **Escopo da gestão de identificação é admin/superadmin.** Gestor/usuário só consomem a identificação
+  (somente leitura) nas conversas. Um fluxo para o **gestor identificar contatos dentro do seu escopo**
+  de conversas (via `capture_wid` → instância → equipe) fica para fase futura — exigiria resolver quais
+  contatos o gestor pode ver sem risco de vazamento entre tenants. Registrado em 2026-07-27.
+- **Matching de telefone é exato** (string armazenada, sem normalização de DDI/formatação). Números
+  gravados de formas diferentes não são unificados na autoidentificação. Avaliar normalização (E.164)
+  quando o pipeline padronizar. Registrado em 2026-07-27.
+- **Limpeza da origem não reverte as cópias `auto`.** Remover a identificação manual do contato de
+  origem não desfaz as identificações `auto` já propagadas (limpeza é por contato). Registrado em 2026-07-27.
+- **Migration `20260728120000` NÃO executada em produção.** Cria `contact_types` + colunas/FKs em
+  `contacts` (ALTER/ADD CONSTRAINT → lock). Aplicar só em janela de manutenção aprovada.
 
 ## Ferramentas / QA
 

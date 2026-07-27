@@ -10,6 +10,8 @@ import { createUsersRouter } from './routes/users.js';
 import { createTeamsRouter } from './routes/teams.js';
 import { createProfileRouter } from './routes/profile.js';
 import { createChatsRouter } from './routes/chats.js';
+import { createContactTypesRouter } from './routes/contactTypes.js';
+import { createContactsRouter } from './routes/contacts.js';
 
 export function createApp(dbPool = pool) {
   const app = express();
@@ -30,6 +32,9 @@ export function createApp(dbPool = pool) {
   app.use('/api/users', authenticate, createUsersRouter(dbPool));
   app.use('/api/teams', authenticate, createTeamsRouter(dbPool));
   app.use('/api/chats', authenticate, createChatsRouter(dbPool));
+  // /api/contact-types antes de /api/contacts (rotas distintas, sem colisão de prefixo).
+  app.use('/api/contact-types', authenticate, createContactTypesRouter(dbPool));
+  app.use('/api/contacts', authenticate, createContactsRouter(dbPool));
 
   return app;
 }

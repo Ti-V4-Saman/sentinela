@@ -491,7 +491,7 @@ describe('GET /api/chats — contato determinístico (última msg pode não ter 
     await withTx(async (c) => {
       await seedContacts(c); const app = makeApp(c);
       const r = await request(app).get('/api/chats').set('Authorization', bearer(ADMIN));
-      expect(byId(r.body).CHN.contact).toEqual({ id: null, name: null, phone: null });
+      expect(byId(r.body).CHN.contact).toEqual({ id: null, name: null, displayName: null, phone: null, identified: false, type: null });
     });
   });
   it('5. busca por nome/telefone funciona mesmo com última msg sem contato; sem multiplicar linhas', async () => {
