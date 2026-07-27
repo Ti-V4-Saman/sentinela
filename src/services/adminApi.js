@@ -51,6 +51,24 @@ export const listUserInstances = (userId) => req(`/api/users/${userId}/instances
 export const linkUserInstance = (userId, instanceId) => req(`/api/users/${userId}/instances`, { method: 'POST', body: JSON.stringify({ instanceId }) });
 export const unlinkUserInstance = (userId, instanceId) => req(`/api/users/${userId}/instances/${instanceId}`, { method: 'DELETE' });
 
+// ---- Tipos de contato (admin/superadmin) ----
+export const listContactTypes = (tenantId) => req(`/api/contact-types${tenantId ? `?tenantId=${tenantId}` : ''}`);
+export const createContactType = (body) => req('/api/contact-types', { method: 'POST', body: JSON.stringify(body) });
+export const updateContactType = (id, body) => req(`/api/contact-types/${id}`, { method: 'PUT', body: JSON.stringify(body) });
+export const deleteContactType = (id) => req(`/api/contact-types/${id}`, { method: 'DELETE' });
+
+// ---- Contatos + identificação (admin/superadmin) ----
+function qs(params) {
+  const u = new URLSearchParams();
+  Object.entries(params || {}).forEach(([k, v]) => { if (v !== undefined && v !== null && v !== '') u.set(k, String(v)); });
+  const s = u.toString();
+  return s ? `?${s}` : '';
+}
+export const listContacts = (params) => req(`/api/contacts${qs(params)}`);
+export const identifyContact = (id, body) => req(`/api/contacts/${encodeURIComponent(id)}/identify`, { method: 'PUT', body: JSON.stringify(body) });
+export const clearContactIdentification = (id, body) => req(`/api/contacts/${encodeURIComponent(id)}/identify`, { method: 'DELETE', body: body ? JSON.stringify(body) : undefined });
+export const autoIdentifyContacts = (body) => req('/api/contacts/auto-identify', { method: 'POST', body: JSON.stringify(body || {}) });
+
 // ---- instâncias (gestão) + ponte capture_wid ----
 export const listInstances = () => req('/api/instances');
 export const captureWidCandidates = (instanceId) => req(`/api/instances/${instanceId}/capture-candidates`);

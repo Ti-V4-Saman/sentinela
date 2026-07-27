@@ -43,6 +43,7 @@ Nunca há fallback para "todas as instâncias do tenant". Conjunto visível vazi
 | `search` | string | — | Busca por **nome ou telefone do contato** (`LIKE`). |
 | `keyword` | string | — | Conversas que **contêm alguma mensagem** casando o termo no texto/transcrição (`EXISTS` com FULLTEXT + fallback LIKE, mesma estratégia da thread). A subquery respeita o **mesmo escopo de captura visível** (tenant + `widScope`, i.e. RBAC ∩ `instance_id` ∩ `team_id` ∩ `user_id`): um match numa instância **não autorizada** do mesmo chat **não** vaza a conversa. Não confundir com `search` (contato). |
 | `type` | string | — | Filtra pelo **tipo da última mensagem** da conversa (`text`, `audio`, `image`, …). |
+| `identified` | `0`\|`1` | — | Filtra pelo **status de identificação** do contato resolvido (Fase 4). `1` = identificado; `0` = não identificado (inclui conversa sem contato). Inválido → `400`. Ver `docs/IDENTIFICACAO-CONTATOS.md`. |
 | `instance_id` | string | — | `sentinela_instances.id` (instância gerenciada). Traduzido para `capture_wid`. |
 | `team_id` | int | — | Restringe às instâncias vinculadas à equipe (`team_instances` → `capture_wid`). Interseção com o escopo RBAC e demais restrições. |
 | `user_id` | int | — | Restringe às instâncias vinculadas ao usuário (`user_instances` → `capture_wid`). Interseção com o escopo RBAC e demais restrições. |
@@ -90,7 +91,7 @@ contato resolvido.
       "ref": "REF_OPACO_PARA_NAVEGACAO",
       "title": "Nome da conversa",
       "isGroup": false,
-      "contact": { "id": "CONTACT_ID", "name": "Nome", "phone": "55DDDNNNNNNNN" },
+      "contact": { "id": "CONTACT_ID", "name": "Nome", "displayName": "Nome de exibição", "phone": "55DDDNNNNNNNN", "identified": true, "type": { "id": 1, "name": "Cliente", "color": "info" } },
       "instance": { "id": "SENTINELA_INSTANCE_ID", "name": "Nome da instância" },
       "lastMessage": { "text": "última mensagem/transcrição", "type": "text", "direction": "incoming", "at": "2026-07-03T08:00:00.000Z" },
       "messageCount": 12,
@@ -101,6 +102,8 @@ contato resolvido.
 ```
 Não retorna `wid`, `tenant_id`, tokens nem payloads internos. **`ref`** é um identificador
 opaco (codifica tenant+chat) para abrir o detalhe **sem ambiguidade** — passe-o como `:id`.
+Quando o contato está identificado (Fase 4), `title` usa o `display_name`; `contact.type` traz o tom
+semântico (`color`) para o badge.
 
 ### Exemplo
 `GET /api/chats?is_group=0&search=Alice&limit=20&page=1&date_from=2026-07-01`
@@ -154,7 +157,7 @@ deduplicação por `id` e preservação da posição de scroll. `hasMore` = mens
       "direction": "incoming",
       "fromMe": false,
       "fromInternal": false,
-      "sender": { "contactId": "CONTACT_ID", "name": "Nome", "phone": "55DDDNNNNNNNN" },
+      "sender": { "contactId": "CONTACT_ID", "name": "Nome", "displayName": "Nome de exibição", "phone": "55DDDNNNNNNNN", "type": { "id": 1, "name": "Cliente", "color": "info" } },
       "at": "2026-07-01T10:02:00.000Z"
     }
   ]

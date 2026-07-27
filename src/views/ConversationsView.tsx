@@ -10,6 +10,7 @@ import { StatusBadge } from '@/components/badge';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { typeMeta } from '@/components/message';
+import { ContactTypeBadge } from '@/components/contacts/contact-type-badge';
 import { ChatThreadView } from './ChatThreadView';
 import { listChats } from '../services/chatsApi';
 import { listInstances, listTeams, listUsers } from '../services/adminApi';
@@ -21,7 +22,11 @@ const MSG_TYPES = ['text', 'audio', 'image', 'video', 'document'];
 
 type Chat = {
   id: string; ref: string; title: string | null; isGroup: boolean;
-  contact: { id: string | null; name: string | null; phone: string | null };
+  contact: {
+    id: string | null; name: string | null; phone: string | null;
+    displayName?: string | null; identified?: boolean;
+    type?: { id: number; name: string; color?: string | null } | null;
+  };
   instance: { id: string | null; name: string | null };
   lastMessage: { text: string | null; type: string | null; direction: string; at: string | null };
   messageCount: number; lastActivityAt: string | null;
@@ -57,6 +62,7 @@ export default function ConversationsView({ groupMode }: { groupMode: boolean })
   const [search, setSearch] = React.useState('');
   const [keyword, setKeyword] = React.useState('');
   const [type, setType] = React.useState('ALL');
+  const [identified, setIdentified] = React.useState('ALL');
   const [instanceId, setInstanceId] = React.useState('ALL');
   const [teamId, setTeamId] = React.useState('ALL');
   const [userId, setUserId] = React.useState('ALL');
@@ -84,15 +90,16 @@ export default function ConversationsView({ groupMode }: { groupMode: boolean })
     search: dSearch || undefined,
     keyword: dKeyword || undefined,
     type: type !== 'ALL' ? type : undefined,
+    identified: identified !== 'ALL' ? identified : undefined,
     instance_id: instanceId !== 'ALL' ? instanceId : undefined,
     team_id: teamId !== 'ALL' ? teamId : undefined,
     user_id: userId !== 'ALL' ? userId : undefined,
     date_from: dateFrom || undefined,
     date_to: dateTo || undefined,
-  }), [groupMode, page, dSearch, dKeyword, type, instanceId, teamId, userId, dateFrom, dateTo]);
+  }), [groupMode, page, dSearch, dKeyword, type, identified, instanceId, teamId, userId, dateFrom, dateTo]);
 
   // Reset de página quando um filtro muda.
-  React.useEffect(() => { setPage(1); }, [groupMode, dSearch, dKeyword, type, instanceId, teamId, userId, dateFrom, dateTo]);
+  React.useEffect(() => { setPage(1); }, [groupMode, dSearch, dKeyword, type, identified, instanceId, teamId, userId, dateFrom, dateTo]);
 
   // Busca com cancelamento (troca de filtro/aba cancela a requisição anterior).
   React.useEffect(() => {
@@ -108,8 +115,8 @@ export default function ConversationsView({ groupMode }: { groupMode: boolean })
   if (selected) return <ChatThreadView chat={selected} onBack={() => setSelected(null)} />;
 
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
-  const filtering = Boolean(dSearch || dKeyword || type !== 'ALL' || instanceId !== 'ALL' || teamId !== 'ALL' || userId !== 'ALL' || dateFrom || dateTo);
-  const clearFilters = () => { setSearch(''); setKeyword(''); setType('ALL'); setInstanceId('ALL'); setTeamId('ALL'); setUserId('ALL'); setDateFrom(''); setDateTo(''); };
+  const filtering = Boolean(dSearch || dKeyword || type !== 'ALL' || identified !== 'ALL' || instanceId !== 'ALL' || teamId !== 'ALL' || userId !== 'ALL' || dateFrom || dateTo);
+  const clearFilters = () => { setSearch(''); setKeyword(''); setType('ALL'); setIdentified('ALL'); setInstanceId('ALL'); setTeamId('ALL'); setUserId('ALL'); setDateFrom(''); setDateTo(''); };
 
   return (
     <main className="mx-auto w-full max-w-7xl px-4 py-8 lg:px-8">
@@ -132,6 +139,14 @@ export default function ConversationsView({ groupMode }: { groupMode: boolean })
             <SelectContent>
               <SelectItem value="ALL">Todos os tipos</SelectItem>
               {MSG_TYPES.map((t) => <SelectItem key={t} value={t}>{typeMeta(t).label}</SelectItem>)}
+            </SelectContent>
+          </Select>
+          <Select value={identified} onValueChange={setIdentified}>
+            <SelectTrigger className="w-full sm:w-[180px]" aria-label="Identificação do contato"><SelectValue placeholder="Identificação" /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="ALL">Todos os contatos</SelectItem>
+              <SelectItem value="1">Identificados</SelectItem>
+              <SelectItem value="0">Não identificados</SelectItem>
             </SelectContent>
           </Select>
           <Select value={instanceId} onValueChange={setInstanceId}>
@@ -220,6 +235,7 @@ export default function ConversationsView({ groupMode }: { groupMode: boolean })
                       <span className="inline-flex items-center gap-2">
                         {c.isGroup ? <UsersIcon className="h-3.5 w-3.5 text-muted-foreground" /> : <MessageSquare className="h-3.5 w-3.5 text-muted-foreground" />}
                         {name}
+                        {!c.isGroup && c.contact.type && <ContactTypeBadge type={c.contact.type} />}
                       </span>
                     </TableCell>
                     <TableCell className="font-mono text-xs text-muted-foreground">{c.contact.phone || '—'}</TableCell>
