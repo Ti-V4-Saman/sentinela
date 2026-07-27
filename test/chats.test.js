@@ -193,6 +193,34 @@ describe('GET /api/chats — filtros, paginação, ordenação, busca', () => {
       expect(chatIds(r.body)).toEqual(['CH2']);
     });
   });
+  it('filtro team_id → conversas das instâncias da equipe (team_instances)', async () => {
+    await withTx(async (c) => {
+      await seed(c); const app = makeApp(c);
+      const r = await request(app).get('/api/chats?team_id=900100').set('Authorization', bearer(ADMIN)); // team_instances → __i1__ (W1)
+      expect(chatIds(r.body)).toEqual(['CH1']);
+    });
+  });
+  it('filtro user_id → conversas das instâncias do usuário (user_instances)', async () => {
+    await withTx(async (c) => {
+      await seed(c); const app = makeApp(c);
+      const r = await request(app).get('/api/chats?user_id=900011').set('Authorization', bearer(ADMIN)); // user_instances → __i1__ (W1)
+      expect(chatIds(r.body)).toEqual(['CH1']);
+    });
+  });
+  it('filtro type (tipo da última mensagem) → CH1 termina em áudio', async () => {
+    await withTx(async (c) => {
+      await seed(c); const app = makeApp(c);
+      const r = await request(app).get('/api/chats?type=audio').set('Authorization', bearer(ADMIN));
+      expect(chatIds(r.body)).toEqual(['CH1']);
+    });
+  });
+  it('filtro keyword → conversas que contêm a palavra na mensagem', async () => {
+    await withTx(async (c) => {
+      await seed(c); const app = makeApp(c);
+      const r = await request(app).get('/api/chats?keyword=ru').set('Authorization', bearer(ADMIN)); // "grupo" (CH2)
+      expect(chatIds(r.body)).toEqual(['CH2']);
+    });
+  });
 });
 
 describe('GET /api/chats/:id/messages — thread, filtros, isolamento', () => {

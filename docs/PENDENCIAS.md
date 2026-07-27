@@ -26,6 +26,24 @@ Itens conhecidos, adiados de propósito, com a fase a que pertencem.
   (vínculos explícitos, usado pelas conversas). Reconciliar numa fase futura, sem quebrar os
   testes/RBAC de gerenciamento. Registrado em 2026-07-27.
 
+## Fase 3 — UI de Conversas
+
+- **Filtro por "status de identificação" — ADIADO PARA A FASE 4.** O plano previa filtrar conversas
+  por contato identificado/não identificado, mas o schema atual **não tem** coluna de identificação em
+  `contacts` (será criada na Fase 4: `display_name`/`contact_type_id`/`linked_user_id`/…). O filtro e a
+  coluna correspondente entram junto com a identificação. Registrado em 2026-07-27.
+- **"Responsável" (equipe/usuário) por conversa não é exibido na listagem.** É possível **filtrar** por
+  equipe/usuário (`team_id`/`user_id`), mas a resposta de `GET /api/chats` não carrega o responsável
+  resolvido de cada linha (o contrato só traz a instância). Exibir a coluna exigiria estender a API para
+  derivar o vínculo por `capture_wid` → instância → equipe/usuário. Registrado em 2026-07-27.
+- **Thread com paginação para frente (mais antigas → mais novas).** `ChatThreadView` carrega a página 1
+  (mais antigas) e o botão "Carregar mais mensagens" anexa as seguintes, com scroll ao fim na carga
+  inicial. Para conversas muito longas, avaliar paginação reversa (âncora no fim) numa iteração futura.
+  Registrado em 2026-07-27.
+- **Sem prévia de mídia (herdado da Fase 2).** O schema só guarda `type` + `text`/transcrição; áudio/
+  imagem/vídeo/documento renderizam como rótulo + ícone + legenda/transcrição ("sem prévia"). Prévia real
+  depende de URL de mídia no pipeline. Registrado em 2026-07-27.
+
 ## Ferramentas / QA
 
 - **Lint real com ESLint.** Hoje `npm run lint` executa apenas `vite build` (não faz análise

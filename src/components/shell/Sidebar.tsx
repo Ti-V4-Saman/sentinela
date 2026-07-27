@@ -1,7 +1,7 @@
 import * as React from 'react';
 import {
   ShieldCheck, Radio, Building2, Users, UsersRound,
-  Settings, LogOut, Sun, Moon, ChevronsUpDown, Server,
+  Settings, LogOut, Sun, Moon, ChevronsUpDown, Server, MessageSquare, MessagesSquare,
 } from 'lucide-react';
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem,
@@ -11,13 +11,16 @@ import { cn } from '@/lib/utils';
 import { getTheme, toggleTheme, type Theme } from '@/utils/theme';
 
 type Role = 'superadmin' | 'admin' | 'gestor' | 'usuario';
-type NavKey = 'instances' | 'tenants' | 'users' | 'teams';
+type NavKey = 'conversations' | 'groups' | 'instances' | 'tenants' | 'users' | 'teams';
 
 const ROLE_LABELS: Record<string, string> = {
   superadmin: 'Superadmin', admin: 'Administrador', gestor: 'Gestor', usuario: 'Usuário',
 };
 
+const ALL: Role[] = ['superadmin', 'admin', 'gestor', 'usuario'];
 const NAV: { key: NavKey; label: string; icon: React.ComponentType<{ className?: string }>; roles: Role[] }[] = [
+  { key: 'conversations', label: 'Conversas', icon: MessageSquare, roles: ALL },
+  { key: 'groups', label: 'Grupos', icon: MessagesSquare, roles: ALL },
   { key: 'instances', label: 'Conexões', icon: Radio, roles: ['admin', 'gestor', 'usuario'] },
   { key: 'tenants', label: 'Clientes', icon: Building2, roles: ['superadmin'] },
   { key: 'users', label: 'Usuários', icon: Users, roles: ['superadmin', 'admin'] },

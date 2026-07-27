@@ -100,18 +100,40 @@ export function createChatsRouter(pool) {
   const router = express.Router();
   router.use(requireActor(pool));
 
-  // Resolve wids de captura visíveis + filtro opcional por instância (sentinela_instances.id).
-  async function resolveWidScope(actor, instanceIdParam) {
+  // capture_wids (não-nulos) de uma entidade, escopados ao tenant do ator (non-super).
+  const tenantSql = (actor) => (actor.role !== 'superadmin' ? ' AND si.tenant_id = ?' : '');
+  async function widsForInstance(actor, id) {
+    const args = [id]; let sql = 'SELECT capture_wid FROM sentinela_instances si WHERE si.id = ? AND si.capture_wid IS NOT NULL';
+    if (actor.role !== 'superadmin') { sql += ' AND si.tenant_id = ?'; args.push(actor.tenant_id); }
+    const [rows] = await pool.query(sql, args); return rows.map((r) => r.capture_wid);
+  }
+  async function widsForTeam(actor, teamId) {
+    const args = [teamId];
+    let sql = `SELECT si.capture_wid FROM team_instances ti JOIN sentinela_instances si ON si.id = ti.instance_id
+               WHERE ti.team_id = ? AND si.capture_wid IS NOT NULL${tenantSql(actor)}`;
+    if (actor.role !== 'superadmin') args.push(actor.tenant_id);
+    const [rows] = await pool.query(sql, args); return rows.map((r) => r.capture_wid);
+  }
+  async function widsForUser(actor, userId) {
+    const args = [userId];
+    let sql = `SELECT si.capture_wid FROM user_instances ui JOIN sentinela_instances si ON si.id = ui.instance_id
+               WHERE ui.user_id = ? AND si.capture_wid IS NOT NULL${tenantSql(actor)}`;
+    if (actor.role !== 'superadmin') args.push(actor.tenant_id);
+    const [rows] = await pool.query(sql, args); return rows.map((r) => r.capture_wid);
+  }
+
+  // Escopo de wids: visibilidade RBAC ∩ (instance_id ∩ team_id ∩ user_id), quando informados.
+  async function resolveWidScope(actor, q) {
     let widScope = await visibleCaptureWids(pool, actor); // 'ALL' | string[]
-    if (instanceIdParam) {
-      const args = [instanceIdParam];
-      let sql = 'SELECT capture_wid FROM sentinela_instances WHERE id = ?';
-      if (actor.role !== 'superadmin') { sql += ' AND tenant_id = ?'; args.push(actor.tenant_id); }
-      const [rows] = await pool.query(sql, args);
-      const iwid = rows[0]?.capture_wid || null;
-      if (!iwid) return { widScope: [], empty: true };
-      if (widScope !== 'ALL' && !widScope.includes(iwid)) return { widScope: [], empty: true };
-      widScope = [iwid];
+    const restrictions = [];
+    if (q.instance_id) restrictions.push(await widsForInstance(actor, q.instance_id));
+    if (q.team_id) restrictions.push(await widsForTeam(actor, q.team_id));
+    if (q.user_id) restrictions.push(await widsForUser(actor, q.user_id));
+
+    let restricted = null;
+    for (const r of restrictions) restricted = restricted === null ? r : restricted.filter((w) => r.includes(w));
+    if (restricted !== null) {
+      widScope = widScope === 'ALL' ? restricted : widScope.filter((w) => restricted.includes(w));
     }
     const empty = widScope !== 'ALL' && widScope.length === 0;
     return { widScope, empty };
@@ -128,8 +150,10 @@ export function createChatsRouter(pool) {
       const derr = dateBoundError(dFrom) || dateBoundError(dTo);
       if (derr) return res.status(400).json({ error: derr });
       const search = (req.query.search || '').trim();
+      const lastType = (req.query.type || '').trim();
+      const keyword = (req.query.keyword || '').trim();
 
-      const { widScope, empty } = await resolveWidScope(req.actor, req.query.instance_id);
+      const { widScope, empty } = await resolveWidScope(req.actor, req.query);
       if (empty) return res.json({ page, limit, total: 0, chats: [] });
 
       const cteWhere = [], cteArgs = [];
@@ -162,8 +186,15 @@ export function createChatsRouter(pool) {
       const outWhere = ['msg.rn = 1'], outArgs = [];
       if (isGroup !== null) { outWhere.push('c.is_group = ?'); outArgs.push(isGroup); }
       if (search) { outWhere.push('(ct.name LIKE ? OR ct.phone LIKE ?)'); outArgs.push(`%${search}%`, `%${search}%`); }
+      if (lastType) { outWhere.push('msg.type = ?'); outArgs.push(lastType); } // tipo da ÚLTIMA mensagem
       if (dFrom) { outWhere.push(`msg.last_ts ${dFrom.op} ?`); outArgs.push(dFrom.value); }
       if (dTo) { outWhere.push(`msg.last_ts ${dTo.op} ?`); outArgs.push(dTo.value); }
+      if (keyword) {
+        // Conversas que CONTÊM alguma mensagem casando a palavra-chave (FULLTEXT/LIKE).
+        const ks = messageTextSearch('mk.text', keyword);
+        outWhere.push(`EXISTS (SELECT 1 FROM messages mk WHERE mk.tenant_id = msg.tenant_id AND mk.chat_id = msg.chat_id AND ${ks.sql})`);
+        outArgs.push(...ks.params);
+      }
       const outClause = outWhere.join(' AND ');
 
       const joins = `
@@ -227,7 +258,7 @@ export function createChatsRouter(pool) {
       if (derr) return res.status(400).json({ error: derr });
       const search = (req.query.search || '').trim();
 
-      const { widScope, empty } = await resolveWidScope(req.actor, req.query.instance_id);
+      const { widScope, empty } = await resolveWidScope(req.actor, req.query);
       if (empty) return res.status(404).json({ error: 'Conversa não encontrada' });
 
       // Resolve o chat: por ref (tenant+chat explícitos) ou por chat_id cru (escopado).
