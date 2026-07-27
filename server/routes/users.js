@@ -125,6 +125,66 @@ export function createUsersRouter(pool) {
     }
   });
 
+  // ---- user_instances: instâncias vinculadas diretamente ao usuário (papel 'usuario') ----
+  // Fonte da verdade da visibilidade de conversas do USUÁRIO (Fase 2). Router já é
+  // restrito a admin/superadmin ⇒ usuário comum não altera os próprios vínculos.
+
+  router.get('/:id/instances', async (req, res) => {
+    try {
+      const target = await loadTargetInScope(req.actor, req.params.id);
+      if (!target) return res.status(404).json({ error: 'Usuário não encontrado' });
+      const [rows] = await pool.query(
+        `SELECT si.id, si.name, si.phone_number, si.status, si.capture_wid
+         FROM user_instances ui JOIN sentinela_instances si ON si.id = ui.instance_id
+         WHERE ui.user_id = ? ORDER BY si.name`, [target.id]);
+      res.json(rows.map((r) => ({
+        id: r.id, name: r.name, phoneNumber: r.phone_number || '', status: r.status,
+        captureWid: r.capture_wid || null, captureMapped: !!r.capture_wid,
+      })));
+    } catch (e) {
+      console.error('list user instances:', e);
+      res.status(500).json({ error: 'Falha ao listar instâncias do usuário' });
+    }
+  });
+
+  router.post('/:id/instances', async (req, res) => {
+    const { instanceId } = req.body || {};
+    if (!instanceId) return res.status(400).json({ error: 'instanceId é obrigatório' });
+    try {
+      const target = await loadTargetInScope(req.actor, req.params.id);
+      if (!target) return res.status(404).json({ error: 'Usuário não encontrado' });
+      if (target.role !== 'usuario') {
+        return res.status(400).json({ error: 'Vínculo direto de instância é apenas para usuários com papel "usuário"' });
+      }
+      // A instância deve existir e pertencer ao MESMO tenant do usuário (sem cross-tenant).
+      const [inst] = await pool.query('SELECT tenant_id FROM sentinela_instances WHERE id = ?', [instanceId]);
+      if (inst.length === 0 || Number(inst[0].tenant_id) !== Number(target.tenant_id)) {
+        return res.status(404).json({ error: 'Instância não encontrada no cliente do usuário' });
+      }
+      await pool.query('INSERT INTO user_instances (user_id, instance_id) VALUES (?, ?)', [target.id, instanceId]);
+      res.status(201).json({ success: true, userId: Number(target.id), instanceId });
+    } catch (e) {
+      if (e.code === 'ER_DUP_ENTRY') return res.status(409).json({ error: 'Instância já vinculada ao usuário' });
+      console.error('link user instance:', e);
+      res.status(500).json({ error: 'Falha ao vincular instância' });
+    }
+  });
+
+  router.delete('/:id/instances/:instanceId', async (req, res) => {
+    try {
+      const target = await loadTargetInScope(req.actor, req.params.id);
+      if (!target) return res.status(404).json({ error: 'Usuário não encontrado' });
+      // DELETE só do vínculo — a instância (histórico) NUNCA é excluída.
+      const [r] = await pool.query('DELETE FROM user_instances WHERE user_id = ? AND instance_id = ?',
+        [target.id, req.params.instanceId]);
+      if (r.affectedRows === 0) return res.status(404).json({ error: 'Vínculo não encontrado' });
+      res.json({ success: true, message: 'Instância desvinculada' });
+    } catch (e) {
+      console.error('unlink user instance:', e);
+      res.status(500).json({ error: 'Falha ao desvincular instância' });
+    }
+  });
+
   // DELETE — não permite remover a própria conta.
   router.delete('/:id', async (req, res) => {
     const { id } = req.params;

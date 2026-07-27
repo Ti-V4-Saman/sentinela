@@ -12,12 +12,15 @@ Itens conhecidos, adiados de propósito, com a fase a que pertencem.
 - ✅ **Migration ponte `sentinela_instances.capture_wid` — CRIADA E TESTADA LOCALMENTE
   (2026-07-27), NÃO aplicada em produção.** `migrations/20260727120000_add_capture_wid_bridge.cjs`
   (coluna nullable + `UNIQUE` global). Mesma exigência de **janela aprovada** em produção.
-- **Popular `team_instances` / `user_instances`.** Hoje não têm CRUD (só existência no schema).
-  Enquanto vazios, gestor/usuário veem **zero** conversas (fail-closed). Definir a gestão desses
-  vínculos (tela/endpoint) para habilitar a visibilidade explícita. Registrado em 2026-07-27.
-- **Contrato do pipeline para `capture_wid`.** O n8n/QuePasa precisa gravar `capture_wid` via
-  `PUT /api/instances/:id/capture-wid` (ver `docs/PIPELINE-CAPTURE-WID.md`). Não implementado no
-  pipeline nesta fase. Registrado em 2026-07-27.
+- ✅ **Gestão de `team_instances` / `user_instances` — IMPLEMENTADA (bloco integração-capture-wid-vínculos,
+  2026-07-27).** Backend: `GET/POST/DELETE /api/teams/:id/instances` (explícito, substitui o derivado)
+  e `GET/POST/DELETE /api/users/:id/instances` (papel `usuario`), com escopo de tenant + anti-duplicação.
+  Frontend: aba "Instâncias" no modal de Vínculos da equipe e ação "Instâncias" no usuário. Agora gestor/
+  usuário podem receber conversas quando houver vínculo + `capture_wid` mapeado.
+- **Preenchimento AUTOMÁTICO de `capture_wid` pelo pipeline — PENDENTE.** O n8n/QuePasa ainda precisa
+  gravar `capture_wid` via `PUT /api/instances/:id/capture-wid` (ver `docs/PIPELINE-CAPTURE-WID.md`).
+  Como paliativo, superadmin/admin fazem o **mapeamento manual** na Gestão de Conexões (ação "Mapear
+  captura" + `GET /api/instances/:id/capture-candidates`). Registrado em 2026-07-27.
 - **Drift de visibilidade de *management*.** `tenantScope.visibleInstanceIds` (usado por
   `/api/instances`) resolve por propriedade (`owner_user_id`), divergindo do modelo documentado
   (vínculos explícitos, usado pelas conversas). Reconciliar numa fase futura, sem quebrar os

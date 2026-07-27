@@ -1,6 +1,6 @@
 import * as React from 'react';
 import {
-  Users, Plus, Pencil, Trash2, MoreHorizontal, RotateCw, AlertCircle, SearchX, ChevronLeft, ChevronRight,
+  Users, Plus, Pencil, Trash2, Radio, MoreHorizontal, RotateCw, AlertCircle, SearchX, ChevronLeft, ChevronRight,
 } from 'lucide-react';
 import { StatusBadge } from '@/components/badge';
 import { SearchInput } from '@/components/input-group';
@@ -12,6 +12,7 @@ import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import { UserFormDialog, ROLE_LABELS, type UserRow, type TenantOption } from '@/components/users/user-form-dialog';
+import { UserInstancesDialog } from '@/components/users/user-instances-dialog';
 import { listUsers, createUser, updateUser, deleteUser, listTenants } from '../services/adminApi';
 import { getUser } from '../services/authApi';
 import { useToast } from '../components/ui/ToastProvider';
@@ -40,6 +41,7 @@ export default function UsersView() {
 
   const [formOpen, setFormOpen] = React.useState(false);
   const [editing, setEditing] = React.useState<UserRow | null>(null);
+  const [instancesUser, setInstancesUser] = React.useState<UserRow | null>(null);
 
   const tenantName = (id?: number | null) =>
     (id != null && tenants.find((t) => t.id === id)?.name) || (id != null ? `#${id}` : '—');
@@ -258,6 +260,11 @@ export default function UsersView() {
                           <DropdownMenuItem onClick={() => openEdit(u)}>
                             <Pencil className="h-4 w-4" /> Editar
                           </DropdownMenuItem>
+                          {u.role === 'usuario' && (
+                            <DropdownMenuItem onClick={() => setInstancesUser(u)}>
+                              <Radio className="h-4 w-4" /> Instâncias
+                            </DropdownMenuItem>
+                          )}
                           {!isSelf && (
                             <>
                               <DropdownMenuSeparator />
@@ -308,6 +315,13 @@ export default function UsersView() {
           confirm={confirm}
           onClose={() => setFormOpen(false)}
           onSubmit={handleSubmit}
+        />
+      )}
+      {instancesUser && (
+        <UserInstancesDialog
+          user={{ id: instancesUser.id, name: instancesUser.name, tenantId: Number(instancesUser.tenantId ?? me?.tenantId) }}
+          toast={toast}
+          onClose={() => setInstancesUser(null)}
         />
       )}
     </main>

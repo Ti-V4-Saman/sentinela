@@ -54,30 +54,41 @@ describe('CRUD /api/teams + membros (usuários) e números derivados', () => {
     });
   });
 
-  it('vincular usuário-membro traz as instâncias dele (derivadas)', async () => {
+  it('team_instances: vincular EXPLÍCITO + listar (não deriva dos membros)', async () => {
     await withTx(async (conn) => {
       await seed(conn);
       const app = makeApp(conn);
       const teamId = await createTeam(app);
-      const ok = await request(app).post(`/api/teams/${teamId}/users`).set('Authorization', bearer(AD1)).send({ userId: 900011 });
+      // adicionar membro NÃO adiciona instância (modelo explícito)
+      await request(app).post(`/api/teams/${teamId}/users`).set('Authorization', bearer(AD1)).send({ userId: 900011 });
+      let list = await request(app).get(`/api/teams/${teamId}/instances`).set('Authorization', bearer(AD1));
+      expect(list.body).toEqual([]); // sem vínculo explícito ainda
+      const ok = await request(app).post(`/api/teams/${teamId}/instances`).set('Authorization', bearer(AD1)).send({ instanceId: '__i1__' });
       expect(ok.status).toBe(201);
-      const derived = await request(app).get(`/api/teams/${teamId}/instances`).set('Authorization', bearer(AD1));
-      expect(ids(derived.body)).toEqual(['__i1__']);
+      list = await request(app).get(`/api/teams/${teamId}/instances`).set('Authorization', bearer(AD1));
+      expect(ids(list.body)).toEqual(['__i1__']);
     });
   });
 
-  it('números derivados = união dos membros; remover membro remove os dele', async () => {
+  it('team_instances: vincular/remover; cross-tenant → 404; duplicado → 409', async () => {
     await withTx(async (conn) => {
       await seed(conn);
       const app = makeApp(conn);
       const teamId = await createTeam(app);
-      await request(app).post(`/api/teams/${teamId}/users`).set('Authorization', bearer(AD1)).send({ userId: 900011 });
-      await request(app).post(`/api/teams/${teamId}/users`).set('Authorization', bearer(AD1)).send({ userId: 900012 });
-      let derived = await request(app).get(`/api/teams/${teamId}/instances`).set('Authorization', bearer(AD1));
-      expect(ids(derived.body)).toEqual(['__i1__', '__i2__']);
-      await request(app).delete(`/api/teams/${teamId}/users/900011`).set('Authorization', bearer(AD1));
-      derived = await request(app).get(`/api/teams/${teamId}/instances`).set('Authorization', bearer(AD1));
-      expect(ids(derived.body)).toEqual(['__i2__']);
+      await request(app).post(`/api/teams/${teamId}/instances`).set('Authorization', bearer(AD1)).send({ instanceId: '__i1__' });
+      await request(app).post(`/api/teams/${teamId}/instances`).set('Authorization', bearer(AD1)).send({ instanceId: '__i2__' });
+      let list = await request(app).get(`/api/teams/${teamId}/instances`).set('Authorization', bearer(AD1));
+      expect(ids(list.body)).toEqual(['__i1__', '__i2__']);
+      // duplicado
+      const dup = await request(app).post(`/api/teams/${teamId}/instances`).set('Authorization', bearer(AD1)).send({ instanceId: '__i1__' });
+      expect(dup.status).toBe(409);
+      // cross-tenant (__i3__ é do tenant 2)
+      const cross = await request(app).post(`/api/teams/${teamId}/instances`).set('Authorization', bearer(AD1)).send({ instanceId: '__i3__' });
+      expect(cross.status).toBe(404);
+      // remover
+      await request(app).delete(`/api/teams/${teamId}/instances/__i1__`).set('Authorization', bearer(AD1));
+      list = await request(app).get(`/api/teams/${teamId}/instances`).set('Authorization', bearer(AD1));
+      expect(ids(list.body)).toEqual(['__i2__']);
     });
   });
 
