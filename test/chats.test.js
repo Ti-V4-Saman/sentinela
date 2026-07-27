@@ -372,6 +372,43 @@ describe('GET /api/chats — datas normalizadas', () => {
   });
 });
 
+describe('GET /api/chats — validação semântica de datetime', () => {
+  const get = (c, q) => request(makeApp(c)).get(`/api/chats?${q}`).set('Authorization', bearer(ADMIN));
+  const cases = [
+    ['1. 2026-02-30 (dia inexistente)', 'date_from=2026-02-30', 400],
+    ['2. 2025-02-29 (não bissexto)', 'date_from=2025-02-29', 400],
+    ['3. 2024-02-29 (bissexto válido)', 'date_from=2024-02-29', 200],
+    ['4. hora 24:00:00', 'date_from=2026-07-27T24:00:00', 400],
+    ['5. minuto 60', 'date_from=2026-07-27T10:60:00', 400],
+    ['6. segundo 60', 'date_from=2026-07-27T10:00:60', 400],
+    ['7. datetime válido sem timezone', 'date_from=2026-07-27T10:00:00', 200],
+    ['8. datetime com Z', 'date_from=2026-07-27T10:00:00Z', 400],
+    ['9. datetime com offset -03:00', 'date_from=2026-07-27T23:00:00-03:00', 400],
+    ['fração de segundo sem tz', 'date_from=2026-07-27T10:00:00.500', 400],
+  ];
+  for (const [label, q, status] of cases) {
+    it(label + ` → ${status}`, async () => {
+      await withTx(async (c) => { await seed(c); expect((await get(c, q)).status).toBe(status); });
+    });
+  }
+  it('mensagem de timezone é específica (Z/offset)', async () => {
+    await withTx(async (c) => {
+      await seed(c);
+      const r = await get(c, 'date_from=2026-07-27T10:00:00Z');
+      expect(r.body.error).toMatch(/timezone/i);
+    });
+  });
+  it('10. datetime inválido não vira 500 (é barrado com 400 antes da query)', async () => {
+    await withTx(async (c) => {
+      await seed(c);
+      for (const q of ['date_from=2026-02-30T10:00:00', 'date_to=2026-07-27T25:61:99', 'date_from=2026-07-27T10:00:00Z']) {
+        const r = await get(c, q);
+        expect(r.status).toBe(400); // nunca 500 (erro do MySQL)
+      }
+    });
+  });
+});
+
 // ---- Item 2: resolução determinística do contato ----
 // tenant t1, admin 900050. Instância W1/i1. Contatos C1(Alice), C5(Eve).
 // CHR: recebida(C1) → enviada(sem contato)     → contato = Alice

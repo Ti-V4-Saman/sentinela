@@ -26,33 +26,57 @@ function parseBool(v) {
 
 const pad = (n) => String(n).padStart(2, '0');
 
-// Normaliza data para o formato do MySQL e rejeita formatos ambíguos.
-// Retorna null (não fornecida), false (inválida) ou { op, value }.
-//  - `YYYY-MM-DD`: date_from → '>= dia 00:00:00'; date_to → '< dia seguinte 00:00:00'
-//    (limite EXCLUSIVO ⇒ inclui o dia inteiro).
-//  - datetime ISO / 'YYYY-MM-DD HH:MM[:SS]': inclusivo ('>=' / '<='). TZ/frações são
-//    descartadas (comparação wall-clock, consistente com o armazenamento).
+// Valida ano/mês/dia/hora/min/seg reais (inclui bissexto). h 00–23, mi/s 00–59.
+function isValidCalendar(y, mo, d, h, mi, s) {
+  if (mo < 1 || mo > 12 || d < 1 || d > 31 || h > 23 || mi > 59 || s > 59) return false;
+  const dt = new Date(Date.UTC(y, mo - 1, d, h, mi, s));
+  return dt.getUTCFullYear() === y && dt.getUTCMonth() === mo - 1 && dt.getUTCDate() === d
+    && dt.getUTCHours() === h && dt.getUTCMinutes() === mi && dt.getUTCSeconds() === s;
+}
+
+// Normaliza data para o formato do MySQL (horário do banco, SEM timezone) e valida
+// semanticamente. Formatos aceitos: `YYYY-MM-DD`, `YYYY-MM-DDTHH:mm[:ss]`, `YYYY-MM-DD HH:mm[:ss]`.
+// Retorna:
+//   null           → não fornecida
+//   'tz'           → veio com Z/offset (rejeitado: não descartamos timezone silenciosamente)
+//   false          → formato/semântica inválidos
+//   { op, value }  → válido. `YYYY-MM-DD`: from '>= dia 00:00:00'; to '< dia seguinte' (inclui o
+//                    dia inteiro). Datetime: inclusivo ('>=' / '<=').
 function parseDateBound(value, isEnd) {
   if (value === undefined || value === '') return null;
 
-  if (/^\d{4}-\d{2}-\d{2}$/.test(value)) {
-    const [y, m, d] = value.split('-').map(Number);
-    const dt = new Date(Date.UTC(y, m - 1, d));
-    if (dt.getUTCFullYear() !== y || dt.getUTCMonth() !== m - 1 || dt.getUTCDate() !== d) return false;
+  // Data pura YYYY-MM-DD
+  let m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+  if (m) {
+    const y = +m[1], mo = +m[2], d = +m[3];
+    if (!isValidCalendar(y, mo, d, 0, 0, 0)) return false;
     if (isEnd) {
-      const nx = new Date(Date.UTC(y, m - 1, d + 1));
+      const nx = new Date(Date.UTC(y, mo - 1, d + 1));
       const nv = `${nx.getUTCFullYear()}-${pad(nx.getUTCMonth() + 1)}-${pad(nx.getUTCDate())}`;
       return { op: '<', value: `${nv} 00:00:00` };
     }
-    return { op: '>=', value: `${value} 00:00:00` };
+    return { op: '>=', value: `${m[1]}-${m[2]}-${m[3]} 00:00:00` };
   }
 
-  const m = /^(\d{4}-\d{2}-\d{2})[T ](\d{2}):(\d{2})(?::(\d{2}))?(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?$/.exec(value);
+  // Datetime SEM timezone: 'YYYY-MM-DD' + (T|espaço) + HH:mm(:ss)?
+  m = /^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})(?::(\d{2}))?$/.exec(value);
   if (m) {
-    const [, date, hh, mm, ss] = m;
-    return { op: isEnd ? '<=' : '>=', value: `${date} ${hh}:${mm}:${ss || '00'}` };
+    const y = +m[1], mo = +m[2], d = +m[3], h = +m[4], mi = +m[5], s = m[6] !== undefined ? +m[6] : 0;
+    if (!isValidCalendar(y, mo, d, h, mi, s)) return false;
+    return { op: isEnd ? '<=' : '>=', value: `${m[1]}-${m[2]}-${m[3]} ${m[4]}:${m[5]}:${m[6] ?? '00'}` };
   }
-  return false; // ambíguo / não suportado
+
+  // Datetime COM timezone (Z ou ±HH:MM) e/ou fração → rejeita explicitamente (não descarta o fuso).
+  if (/^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(?::\d{2})?(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})$/.test(value)) return 'tz';
+
+  return false;
+}
+
+// Mensagem de 400 para um limite de data inválido; null se válido/ausente.
+function dateBoundError(d) {
+  if (d === 'tz') return 'datetime com timezone não é aceito; use horário sem timezone (YYYY-MM-DD ou YYYY-MM-DDTHH:mm:ss)';
+  if (d === false) return 'date_from/date_to inválidos (use YYYY-MM-DD ou YYYY-MM-DDTHH:mm:ss, sem timezone)';
+  return null;
 }
 
 // Referência opaca de navegação: encapsula (tenant_id, chat_id) sem expor tenant_id como
@@ -101,7 +125,8 @@ export function createChatsRouter(pool) {
       if (Number.isNaN(isGroup)) return res.status(400).json({ error: 'is_group inválido (use 0 ou 1)' });
       const dFrom = parseDateBound(req.query.date_from, false);
       const dTo = parseDateBound(req.query.date_to, true);
-      if (dFrom === false || dTo === false) return res.status(400).json({ error: 'date_from/date_to inválidos (use YYYY-MM-DD ou ISO datetime)' });
+      const derr = dateBoundError(dFrom) || dateBoundError(dTo);
+      if (derr) return res.status(400).json({ error: derr });
       const search = (req.query.search || '').trim();
 
       const { widScope, empty } = await resolveWidScope(req.actor, req.query.instance_id);
@@ -198,7 +223,8 @@ export function createChatsRouter(pool) {
       const type = (req.query.type || '').trim();
       const dFrom = parseDateBound(req.query.date_from, false);
       const dTo = parseDateBound(req.query.date_to, true);
-      if (dFrom === false || dTo === false) return res.status(400).json({ error: 'date_from/date_to inválidos' });
+      const derr = dateBoundError(dFrom) || dateBoundError(dTo);
+      if (derr) return res.status(400).json({ error: derr });
       const search = (req.query.search || '').trim();
 
       const { widScope, empty } = await resolveWidScope(req.actor, req.query.instance_id);

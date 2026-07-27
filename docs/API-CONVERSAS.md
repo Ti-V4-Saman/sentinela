@@ -47,11 +47,23 @@ Nunca há fallback para "todas as instâncias do tenant". Conjunto visível vazi
 Paginação e ordenação são feitas **no banco**. Ordenação determinística: última atividade
 desc, depois `(tenant_id, chat_id)`.
 
-**Datas** (ver `parseDateBound`): `YYYY-MM-DD` em `date_from` = início do dia (`>= 00:00:00`);
-em `date_to` = **dia inteiro** (limite EXCLUSIVO no dia seguinte, `< dia+1 00:00:00`). Datetime
-ISO/`YYYY-MM-DD HH:MM[:SS]` é inclusivo (`>=`/`<=`); TZ/frações são descartadas (comparação
-wall-clock). Formatos como `01/07/2026` ou texto livre → `400`. `date_from > date_to` retorna
-lista vazia (sem erro).
+**Datas** (ver `parseDateBound`). Formatos aceitos, **sempre em horário do banco, SEM timezone**:
+- `YYYY-MM-DD`
+- `YYYY-MM-DDTHH:mm:ss` (segundos opcionais: `YYYY-MM-DDTHH:mm`)
+- `YYYY-MM-DD HH:mm:ss` (espaço no lugar do `T`; segundos opcionais)
+
+Semântica: `YYYY-MM-DD` em `date_from` = início do dia (`>= 00:00:00`); em `date_to` = **dia
+inteiro** (limite EXCLUSIVO no dia seguinte, `< dia+1 00:00:00`). Datetime é inclusivo (`>=`/`<=`).
+
+Validação: além do formato, valida **semanticamente** — mês/dia reais (incl. anos bissextos:
+`2024-02-29` ok, `2025-02-29`/`2026-02-30` → `400`), hora `00–23`, minuto/segundo `00–59`
+(`24:00:00`, `10:60:00`, `10:00:60` → `400`). Valores inválidos retornam **`400`**, nunca erro
+do MySQL convertido em `500`. Formatos como `01/07/2026` ou texto livre → `400`.
+`date_from > date_to` retorna lista vazia (sem erro).
+
+**Timezone:** valores com `Z` ou offset (ex.: `2026-07-27T23:00:00-03:00`) ou com fração de
+segundo são **rejeitados com `400`** — o fuso **não** é descartado silenciosamente. O cliente deve
+enviar o horário já no fuso do banco, sem timezone.
 
 **Contato da conversa** (ver `contact_pick`): é o contato da **mensagem não-nula mais recente**
 do chat — independente da última mensagem (que pode ser enviada/interna/sem contato). Nunca é
