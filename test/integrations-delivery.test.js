@@ -2,7 +2,26 @@ import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import { getPool, applyMigrations, withTx } from './helpers/db.js';
 import { deliverBatch, runWithRetries } from '../server/integrations/delivery.js';
-import { createBatch, loadWindowData } from '../server/integrations/repo.js';
+import {
+  createBatch, loadWindowData, loadBatchSnapshot, listBatches, getBatch,
+} from '../server/integrations/repo.js';
+import { encodeSnapshot } from '../server/integrations/payload-snapshot.js';
+
+// Helper de teste: monta os campos de snapshot mínimos exigidos por createBatch a partir de um
+// corpo qualquer (default determinístico) — usado pelos testes que só querem exercitar a
+// idempotência/metadata do batch, sem se importar com o conteúdo exato do payload.
+function minimalSnapshotParams(bodyObj = { test: true }) {
+  const rawBody = JSON.stringify(bodyObj);
+  const snap = encodeSnapshot(rawBody);
+  return {
+    payloadCompressed: snap.compressed,
+    payloadSha256: snap.sha256,
+    payloadSizeBytes: snap.sizeBytes,
+    payloadEncoding: snap.encoding,
+    targetUrlSnapshot: 'https://example.com/hook',
+    contentOptionsSnapshot: { include_direct: true, include_groups: true, include_from_me: true, include_audio_transcripts: false },
+  };
+}
 
 const SECRET = 'whsec_super-secret-plaintext-value';
 const TARGET_URL = 'https://example.com/webhook';
@@ -350,6 +369,7 @@ describe('repo.createBatch — idempotência', () => {
         windowStart: '2026-07-20 00:00:00', windowEnd: '2026-07-21 00:00:00',
         part: 1, partTotal: 1, idempotencyKey: 'idem-dup-key-1',
         conversationCount: 2, messageCount: 5,
+        ...minimalSnapshotParams(),
       };
 
       const first = await createBatch(conn, params);
@@ -381,10 +401,12 @@ describe('repo.createBatch — idempotência', () => {
       const first = await createBatch(conn, {
         ...windowTuple, partTotal: 1, idempotencyKey: 'idem-window-key-A',
         conversationCount: 2, messageCount: 5,
+        ...minimalSnapshotParams({ marker: 'A' }),
       });
       const second = await createBatch(conn, {
         ...windowTuple, partTotal: 9, idempotencyKey: 'idem-window-key-B',
         conversationCount: 99, messageCount: 999,
+        ...minimalSnapshotParams({ marker: 'B' }),
       });
 
       expect(first.created).toBe(true);
@@ -408,6 +430,250 @@ describe('repo.createBatch — idempotência', () => {
       expect(stored[0].part_total).toBe(1);
       expect(stored[0].message_count).toBe(5);
       expect(stored[0].conversation_count).toBe(2);
+    });
+  });
+});
+
+describe('repo.createBatch — snapshot imutável (Etapa B, S2)', () => {
+  it('persiste todas as colunas de snapshot no INSERT', async () => {
+    await withTx(async (conn) => {
+      await conn.query("INSERT INTO tenants (id, name, status) VALUES (910010, 'T-snap', 'active')");
+      await conn.query(`INSERT INTO tenant_integrations (id, tenant_id, type, active, target_url)
+        VALUES (910010, 910010, 'webhook_batch', 1, 'https://example.com/hook')`);
+
+      const rawBody = JSON.stringify({ schema_version: 1, batch: { part: 1 }, messages: [{ x: 1 }] });
+      const snap = encodeSnapshot(rawBody);
+
+      const { id } = await createBatch(conn, {
+        tenantId: 910010, integrationId: 910010, schemaVersion: 1,
+        windowStart: '2026-07-20 00:00:00', windowEnd: '2026-07-21 00:00:00',
+        part: 1, partTotal: 1, idempotencyKey: 'idem-snap-1',
+        conversationCount: 1, messageCount: 1,
+        payloadCompressed: snap.compressed, payloadSha256: snap.sha256,
+        payloadSizeBytes: snap.sizeBytes, payloadEncoding: snap.encoding,
+        targetUrlSnapshot: 'https://example.com/hook',
+        contentOptionsSnapshot: { include_direct: true, include_groups: false, include_from_me: true, include_audio_transcripts: false },
+      });
+
+      const [rows] = await conn.query(
+        `SELECT payload_compressed, payload_sha256, payload_size_bytes, payload_encoding,
+                payload_created_at, target_url_snapshot, content_options_snapshot
+         FROM integration_delivery_batches WHERE id = ?`,
+        [id],
+      );
+      const row = rows[0];
+      expect(row.payload_compressed).not.toBeNull();
+      expect(row.payload_sha256).toBe(snap.sha256);
+      expect(row.payload_size_bytes).toBe(snap.sizeBytes);
+      expect(row.payload_encoding).toBe('gzip');
+      expect(row.payload_created_at).not.toBeNull();
+      expect(row.target_url_snapshot).toBe('https://example.com/hook');
+      const opts = typeof row.content_options_snapshot === 'string'
+        ? JSON.parse(row.content_options_snapshot) : row.content_options_snapshot;
+      expect(opts).toEqual({ include_direct: true, include_groups: false, include_from_me: true, include_audio_transcripts: false });
+    });
+  });
+
+  it('segunda chamada (mesma idempotency_key) com bytes DIFERENTES retorna created:false e NÃO sobrescreve o snapshot original', async () => {
+    await withTx(async (conn) => {
+      await conn.query("INSERT INTO tenants (id, name, status) VALUES (910011, 'T-snap-dup', 'active')");
+      await conn.query(`INSERT INTO tenant_integrations (id, tenant_id, type, active, target_url)
+        VALUES (910011, 910011, 'webhook_batch', 1, 'https://example.com/hook')`);
+
+      const firstSnap = encodeSnapshot(JSON.stringify({ version: 'original' }));
+      const secondSnap = encodeSnapshot(JSON.stringify({ version: 'DIFERENTE — nunca deveria substituir' }));
+
+      const base = {
+        tenantId: 910011, integrationId: 910011, schemaVersion: 1,
+        windowStart: '2026-07-20 00:00:00', windowEnd: '2026-07-21 00:00:00',
+        part: 1, partTotal: 1, idempotencyKey: 'idem-snap-dup-1',
+        conversationCount: 1, messageCount: 1, targetUrlSnapshot: 'https://example.com/hook',
+      };
+
+      const first = await createBatch(conn, {
+        ...base,
+        payloadCompressed: firstSnap.compressed, payloadSha256: firstSnap.sha256,
+        payloadSizeBytes: firstSnap.sizeBytes, payloadEncoding: firstSnap.encoding,
+      });
+      const second = await createBatch(conn, {
+        ...base,
+        payloadCompressed: secondSnap.compressed, payloadSha256: secondSnap.sha256,
+        payloadSizeBytes: secondSnap.sizeBytes, payloadEncoding: secondSnap.encoding,
+      });
+
+      expect(first.created).toBe(true);
+      expect(second.created).toBe(false);
+      expect(second.id).toBe(first.id);
+
+      const [rows] = await conn.query(
+        'SELECT payload_sha256 FROM integration_delivery_batches WHERE id = ?', [first.id],
+      );
+      expect(rows[0].payload_sha256).toBe(firstSnap.sha256);
+      expect(rows[0].payload_sha256).not.toBe(secondSnap.sha256);
+    });
+  });
+
+  it('createBatch sem snapshot lança PAYLOAD_SNAPSHOT_REQUIRED (nunca cria batch usável sem corpo)', async () => {
+    await withTx(async (conn) => {
+      await conn.query("INSERT INTO tenants (id, name, status) VALUES (910012, 'T-snap-missing', 'active')");
+      await conn.query(`INSERT INTO tenant_integrations (id, tenant_id, type, active, target_url)
+        VALUES (910012, 910012, 'webhook_batch', 1, 'https://example.com/hook')`);
+
+      await expect(createBatch(conn, {
+        tenantId: 910012, integrationId: 910012, schemaVersion: 1,
+        windowStart: '2026-07-20 00:00:00', windowEnd: '2026-07-21 00:00:00',
+        part: 1, partTotal: 1, idempotencyKey: 'idem-snap-missing-1',
+        conversationCount: 0, messageCount: 0,
+      })).rejects.toThrow('PAYLOAD_SNAPSHOT_REQUIRED');
+    });
+  });
+
+  it('batch existente com payload_compressed adulterado no banco: createBatch duplicado lança PAYLOAD_INTEGRITY', async () => {
+    await withTx(async (conn) => {
+      await conn.query("INSERT INTO tenants (id, name, status) VALUES (910013, 'T-snap-tamper', 'active')");
+      await conn.query(`INSERT INTO tenant_integrations (id, tenant_id, type, active, target_url)
+        VALUES (910013, 910013, 'webhook_batch', 1, 'https://example.com/hook')`);
+
+      const snap = encodeSnapshot(JSON.stringify({ version: 'original' }));
+      const params = {
+        tenantId: 910013, integrationId: 910013, schemaVersion: 1,
+        windowStart: '2026-07-20 00:00:00', windowEnd: '2026-07-21 00:00:00',
+        part: 1, partTotal: 1, idempotencyKey: 'idem-snap-tamper-1',
+        conversationCount: 0, messageCount: 0,
+        payloadCompressed: snap.compressed, payloadSha256: snap.sha256,
+        payloadSizeBytes: snap.sizeBytes, payloadEncoding: snap.encoding,
+        targetUrlSnapshot: 'https://example.com/hook',
+      };
+      const first = await createBatch(conn, params);
+
+      // Simula adulteração/corrupção direta no banco (bypass da aplicação).
+      await conn.query(
+        'UPDATE integration_delivery_batches SET payload_compressed = ? WHERE id = ?',
+        [Buffer.from('garbage-not-gzip'), first.id],
+      );
+
+      await expect(createBatch(conn, params)).rejects.toThrow('PAYLOAD_INTEGRITY');
+    });
+  });
+});
+
+describe('repo.loadBatchSnapshot', () => {
+  it('retorna o rawBody exato + target_url_snapshot persistidos', async () => {
+    await withTx(async (conn) => {
+      await conn.query("INSERT INTO tenants (id, name, status) VALUES (910020, 'T-loadsnap', 'active')");
+      await conn.query(`INSERT INTO tenant_integrations (id, tenant_id, type, active, target_url)
+        VALUES (910020, 910020, 'webhook_batch', 1, 'https://example.com/hook')`);
+
+      const rawBody = JSON.stringify({ schema_version: 1, batch: { part: 1 }, messages: [{ hello: 'snapshot' }] });
+      const snap = encodeSnapshot(rawBody);
+      const { id } = await createBatch(conn, {
+        tenantId: 910020, integrationId: 910020, schemaVersion: 1,
+        windowStart: '2026-07-20 00:00:00', windowEnd: '2026-07-21 00:00:00',
+        part: 1, partTotal: 1, idempotencyKey: 'idem-loadsnap-1',
+        conversationCount: 0, messageCount: 1,
+        payloadCompressed: snap.compressed, payloadSha256: snap.sha256,
+        payloadSizeBytes: snap.sizeBytes, payloadEncoding: snap.encoding,
+        targetUrlSnapshot: 'https://target-snapshot.example.com/hook',
+      });
+
+      const loaded = await loadBatchSnapshot(conn, id);
+      expect(loaded.rawBody).toBe(rawBody);
+      expect(loaded.targetUrl).toBe('https://target-snapshot.example.com/hook');
+      expect(loaded.sha256).toBe(snap.sha256);
+      expect(loaded.sizeBytes).toBe(snap.sizeBytes);
+    });
+  });
+
+  it('batch SEM snapshot (colunas NULL) é não-entregável: lança PAYLOAD_INTEGRITY', async () => {
+    await withTx(async (conn) => {
+      await conn.query("INSERT INTO tenants (id, name, status) VALUES (910021, 'T-nosnap', 'active')");
+      await conn.query(`INSERT INTO tenant_integrations (id, tenant_id, type, active, target_url)
+        VALUES (910021, 910021, 'webhook_batch', 1, 'https://example.com/hook')`);
+      const [ins] = await conn.query(
+        `INSERT INTO integration_delivery_batches
+           (tenant_id, integration_id, schema_version, window_start, window_end, part, part_total,
+            idempotency_key, status, conversation_count, message_count)
+         VALUES (910021, 910021, 1, '2026-07-20 00:00:00', '2026-07-21 00:00:00', 1, 1, 'idem-nosnap-1', 'pending', 0, 0)`,
+      );
+
+      await expect(loadBatchSnapshot(conn, ins.insertId)).rejects.toThrow('PAYLOAD_INTEGRITY');
+    });
+  });
+
+  it('payload_sha256 adulterado no banco: loadBatchSnapshot lança PAYLOAD_INTEGRITY (não entrega)', async () => {
+    await withTx(async (conn) => {
+      await conn.query("INSERT INTO tenants (id, name, status) VALUES (910022, 'T-tamper-load', 'active')");
+      await conn.query(`INSERT INTO tenant_integrations (id, tenant_id, type, active, target_url)
+        VALUES (910022, 910022, 'webhook_batch', 1, 'https://example.com/hook')`);
+
+      const snap = encodeSnapshot(JSON.stringify({ a: 1 }));
+      const { id } = await createBatch(conn, {
+        tenantId: 910022, integrationId: 910022, schemaVersion: 1,
+        windowStart: '2026-07-20 00:00:00', windowEnd: '2026-07-21 00:00:00',
+        part: 1, partTotal: 1, idempotencyKey: 'idem-tamper-load-1',
+        conversationCount: 0, messageCount: 0,
+        payloadCompressed: snap.compressed, payloadSha256: snap.sha256,
+        payloadSizeBytes: snap.sizeBytes, payloadEncoding: snap.encoding,
+      });
+
+      await conn.query(
+        'UPDATE integration_delivery_batches SET payload_sha256 = ? WHERE id = ?',
+        ['0'.repeat(64), id],
+      );
+
+      await expect(loadBatchSnapshot(conn, id)).rejects.toThrow('PAYLOAD_INTEGRITY');
+    });
+  });
+});
+
+describe('repo.listBatches / repo.getBatch — nunca expõem payload_compressed', () => {
+  it('listBatches: as linhas retornadas não têm a chave payload_compressed', async () => {
+    await withTx(async (conn) => {
+      await conn.query("INSERT INTO tenants (id, name, status) VALUES (910030, 'T-listing', 'active')");
+      await conn.query(`INSERT INTO tenant_integrations (id, tenant_id, type, active, target_url)
+        VALUES (910030, 910030, 'webhook_batch', 1, 'https://example.com/hook')`);
+
+      const snap = encodeSnapshot(JSON.stringify({ a: 'listing-test' }));
+      await createBatch(conn, {
+        tenantId: 910030, integrationId: 910030, schemaVersion: 1,
+        windowStart: '2026-07-20 00:00:00', windowEnd: '2026-07-21 00:00:00',
+        part: 1, partTotal: 1, idempotencyKey: 'idem-listing-1',
+        conversationCount: 0, messageCount: 0,
+        payloadCompressed: snap.compressed, payloadSha256: snap.sha256,
+        payloadSizeBytes: snap.sizeBytes, payloadEncoding: snap.encoding,
+      });
+
+      const { rows } = await listBatches(conn, 910030, { page: 1, limit: 20 });
+      expect(rows.length).toBeGreaterThan(0);
+      for (const row of rows) {
+        expect(Object.prototype.hasOwnProperty.call(row, 'payload_compressed')).toBe(false);
+      }
+      expect(JSON.stringify(rows)).not.toMatch(/listing-test/);
+    });
+  });
+
+  it('getBatch: a linha retornada não tem a chave payload_compressed', async () => {
+    await withTx(async (conn) => {
+      await conn.query("INSERT INTO tenants (id, name, status) VALUES (910031, 'T-getbatch', 'active')");
+      await conn.query(`INSERT INTO tenant_integrations (id, tenant_id, type, active, target_url)
+        VALUES (910031, 910031, 'webhook_batch', 1, 'https://example.com/hook')`);
+
+      const snap = encodeSnapshot(JSON.stringify({ a: 'getbatch-test' }));
+      const { id } = await createBatch(conn, {
+        tenantId: 910031, integrationId: 910031, schemaVersion: 1,
+        windowStart: '2026-07-20 00:00:00', windowEnd: '2026-07-21 00:00:00',
+        part: 1, partTotal: 1, idempotencyKey: 'idem-getbatch-1',
+        conversationCount: 0, messageCount: 0,
+        payloadCompressed: snap.compressed, payloadSha256: snap.sha256,
+        payloadSizeBytes: snap.sizeBytes, payloadEncoding: snap.encoding,
+      });
+
+      const row = await getBatch(conn, 910031, id);
+      expect(row).not.toBeNull();
+      expect(Object.prototype.hasOwnProperty.call(row, 'payload_compressed')).toBe(false);
+      expect(JSON.stringify(row)).not.toMatch(/getbatch-test/);
+      // metadata de snapshot (não o corpo) continua presente:
+      expect(row.payload_sha256).toBe(snap.sha256);
     });
   });
 });

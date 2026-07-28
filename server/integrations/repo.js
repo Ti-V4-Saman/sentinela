@@ -10,8 +10,24 @@
 // confia: o builder não revalida tenant, então um bug aqui vazaria dados de outro tenant.
 
 import { decryptSecret } from './secret.js';
+import { decodeSnapshot } from './payload-snapshot.js';
 
 const TYPE = 'webhook_batch';
+
+// Colunas de METADATA de integration_delivery_batches expostas em listagens/API — deliberadamente
+// enumeradas (nunca `SELECT *`) para que `payload_compressed` (o corpo comprimido do payload) NUNCA
+// vaze por um endpoint de listagem/detalhe/auditoria (ver plano, item 7). `payload_sha256`,
+// `payload_size_bytes`, `payload_encoding`, `payload_created_at` e `target_url_snapshot` são
+// metadata segura (não é o corpo) — inclusos para auditoria/UI. `content_options_snapshot` também é
+// metadata (flags, não corpo). Se uma coluna nova for adicionada à tabela no futuro, ela só aparece
+// aqui se alguém explicitamente decidir expô-la — nunca por acidente via SELECT *.
+const BATCH_METADATA_COLUMNS = [
+  'id', 'tenant_id', 'integration_id', 'schema_version', 'window_start', 'window_end',
+  'part', 'part_total', 'idempotency_key', 'status', 'conversation_count', 'message_count',
+  'attempt_count', 'next_attempt_at', 'last_attempt_at', 'created_at', 'updated_at',
+  'payload_sha256', 'payload_size_bytes', 'payload_encoding', 'payload_created_at',
+  'target_url_snapshot', 'content_options_snapshot',
+].join(', ');
 
 // ---- tenant_integrations ----
 
@@ -113,6 +129,8 @@ export async function updateLastRunWindowEnd(pool, tenantId, integrationId, wind
 
 // ---- integration_delivery_batches ----
 
+// Lista batches para a API/UI — SÓ metadata (nunca `payload_compressed`, ver plano item 7 e
+// BATCH_METADATA_COLUMNS acima). `SELECT` enumera as colunas explicitamente, não `SELECT *`.
 export async function listBatches(pool, tenantId, { page = 1, limit = 20 } = {}) {
   const offset = (page - 1) * limit;
   const [countRows] = await pool.query(
@@ -121,7 +139,7 @@ export async function listBatches(pool, tenantId, { page = 1, limit = 20 } = {})
   );
   const total = countRows[0].total;
   const [rows] = await pool.query(
-    `SELECT * FROM integration_delivery_batches WHERE tenant_id = ?
+    `SELECT ${BATCH_METADATA_COLUMNS} FROM integration_delivery_batches WHERE tenant_id = ?
      ORDER BY window_end DESC, part ASC
      LIMIT ? OFFSET ?`,
     [tenantId, limit, offset],
@@ -129,9 +147,10 @@ export async function listBatches(pool, tenantId, { page = 1, limit = 20 } = {})
   return { rows, total, page, limit };
 }
 
+// Detalhe de UM batch para a API/UI — mesma disciplina de `listBatches`: só metadata.
 export async function getBatch(pool, tenantId, batchId) {
   const [rows] = await pool.query(
-    'SELECT * FROM integration_delivery_batches WHERE tenant_id = ? AND id = ? LIMIT 1',
+    `SELECT ${BATCH_METADATA_COLUMNS} FROM integration_delivery_batches WHERE tenant_id = ? AND id = ? LIMIT 1`,
     [tenantId, batchId],
   );
   return rows[0] || null;
@@ -173,12 +192,30 @@ export async function listAttempts(pool, tenantId, batchId) {
 // existente: se a tupla de idempotência/janela já existe (colisão detectada pelo SELECT prévio),
 // esta chamada retorna a linha existente tal como está, mesmo que `initialStatus` seja diferente do
 // status atual dela.
+//
+// SNAPSHOT (Etapa B, S2 — ver docs/superpowers/plans/2026-07-28-etapaB-payload-snapshot.md, seção
+// "Formato do snapshot" e regras 1/2): `payloadCompressed`/`payloadSha256`/`payloadSizeBytes`/
+// `payloadEncoding`/`targetUrlSnapshot`/`contentOptionsSnapshot` são gravados NO MESMO INSERT que a
+// metadata/idempotency_key/part/contagens — nunca existe um batch utilizável sem snapshot completo
+// (regra 1). `payload_created_at = NOW()` marca o instante da persistência.
+//
+// DUPLICATE (regra 2): quando o SELECT prévio encontra uma linha já existente (por idempotency_key
+// OU pela tupla de janela), o snapshot recém-calculado pelo CHAMADOR é DESCARTADO — o primeiro
+// snapshot gravado é autoritativo e nunca é sobrescrito, mesmo que dados de origem tenham mudado
+// entre execuções. Antes de devolver `created:false`, esta função recarrega o snapshot já
+// persistido e chama `decodeSnapshot` sobre ELE MESMO (nunca compara com um sha recém-calculado) —
+// isso confirma que o que está gravado no banco é internamente consistente (o corpo comprimido
+// ainda hasheia para o sha persistido). Se `decodeSnapshot` lançar (adulteração/corrupção), o erro
+// de integridade é propagado — esta função NUNCA retorna um batch "existente" usável nesse caso.
 export async function createBatch(pool, {
   tenantId, integrationId, schemaVersion, windowStart, windowEnd, part = 1, partTotal = 1,
   idempotencyKey, conversationCount = 0, messageCount = 0, initialStatus = 'pending',
+  payloadCompressed, payloadSha256, payloadSizeBytes, payloadEncoding,
+  targetUrlSnapshot = null, contentOptionsSnapshot = null,
 }) {
   const [existingRows] = await pool.query(
-    `SELECT id FROM integration_delivery_batches
+    `SELECT id, payload_compressed, payload_encoding, payload_sha256, payload_size_bytes
+     FROM integration_delivery_batches
      WHERE idempotency_key = ?
         OR (tenant_id = ? AND integration_id = ? AND window_start = ? AND window_end = ?
             AND schema_version = ? AND part = ?)
@@ -186,24 +223,78 @@ export async function createBatch(pool, {
     [idempotencyKey, tenantId, integrationId, windowStart, windowEnd, schemaVersion, part],
   );
   if (existingRows[0]) {
+    assertExistingSnapshotConsistent(existingRows[0]);
     return { id: existingRows[0].id, created: false };
+  }
+
+  if (payloadCompressed == null || !payloadSha256 || payloadSizeBytes == null || !payloadEncoding) {
+    throw new Error('PAYLOAD_SNAPSHOT_REQUIRED');
   }
 
   const [result] = await pool.query(
     `INSERT INTO integration_delivery_batches
        (tenant_id, integration_id, schema_version, window_start, window_end, part, part_total,
-        idempotency_key, status, conversation_count, message_count)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        idempotency_key, status, conversation_count, message_count,
+        payload_compressed, payload_sha256, payload_size_bytes, payload_encoding, payload_created_at,
+        target_url_snapshot, content_options_snapshot)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), ?, ?)
      ON DUPLICATE KEY UPDATE id = LAST_INSERT_ID(id)`,
     [
       tenantId, integrationId, schemaVersion, windowStart, windowEnd, part, partTotal,
       idempotencyKey, initialStatus, conversationCount, messageCount,
+      payloadCompressed, payloadSha256, payloadSizeBytes, payloadEncoding,
+      targetUrlSnapshot, contentOptionsSnapshot == null ? null : JSON.stringify(contentOptionsSnapshot),
     ],
   );
   // Corrida rara (outra conexão inseriu entre o SELECT e o INSERT desta): o ON DUPLICATE KEY
   // UPDATE ainda garante que não haverá 2 linhas — LAST_INSERT_ID(id) devolve o id da linha
-  // vencedora (a nossa, se ganhamos a corrida; a existente, se perdemos).
+  // vencedora (a nossa, se ganhamos a corrida; a existente, se perdemos). Se perdemos a corrida, o
+  // snapshot que "ganhou" é o da outra conexão — não revalidamos aqui (caminho raríssimo,
+  // equivalente em espírito ao SELECT-then-INSERT de cima; auto-consistência já é garantida na
+  // criação de quem venceu).
   return { id: result.insertId, created: true };
+}
+
+// Confere que o snapshot de uma linha JÁ EXISTENTE é internamente consistente — nunca compara com
+// um sha recém-calculado pelo chamador (o snapshot original é autoritativo). Lança PAYLOAD_INTEGRITY
+// se as colunas de snapshot estiverem ausentes (NULL — batch pré-existente sem snapshot, não
+// entregável) ou se o corpo comprimido não hashear mais para o sha persistido (adulteração).
+function assertExistingSnapshotConsistent(row) {
+  if (row.payload_compressed == null || !row.payload_sha256 || row.payload_size_bytes == null || !row.payload_encoding) {
+    throw new Error('PAYLOAD_INTEGRITY');
+  }
+  decodeSnapshot({
+    compressed: row.payload_compressed,
+    encoding: row.payload_encoding,
+    sha256: row.payload_sha256,
+    sizeBytes: row.payload_size_bytes,
+  });
+}
+
+// Carrega o snapshot completo (corpo descomprimido + target_url_snapshot) de UM batch para
+// entrega/retry/reenvio (S3, próxima tarefa) — a ÚNICA função deste módulo que devolve o corpo do
+// payload em memória, carregado sob demanda por batch (nunca em listagem, mantém memória limitada).
+// Lança PAYLOAD_INTEGRITY se o snapshot estiver ausente (colunas NULL — batch não-entregável) ou
+// inconsistente (adulteração no banco).
+export async function loadBatchSnapshot(pool, batchId) {
+  const [rows] = await pool.query(
+    `SELECT payload_compressed, payload_encoding, payload_sha256, payload_size_bytes, target_url_snapshot
+     FROM integration_delivery_batches WHERE id = ? LIMIT 1`,
+    [batchId],
+  );
+  const row = rows[0];
+  if (!row || row.payload_compressed == null || !row.payload_sha256 || row.payload_size_bytes == null || !row.payload_encoding) {
+    throw new Error('PAYLOAD_INTEGRITY');
+  }
+  const rawBody = decodeSnapshot({
+    compressed: row.payload_compressed,
+    encoding: row.payload_encoding,
+    sha256: row.payload_sha256,
+    sizeBytes: row.payload_size_bytes,
+  });
+  return {
+    rawBody, targetUrl: row.target_url_snapshot, sha256: row.payload_sha256, sizeBytes: row.payload_size_bytes,
+  };
 }
 
 // Grava uma tentativa de entrega. `error` já deve chegar SANITIZADO (sem secret/URL crua/corpo) —

@@ -37,6 +37,7 @@
 
 import { computeDueWindow, idempotencyKey } from '../integrations/window.js';
 import { buildPayload, chunkPayload } from '../integrations/payload.js';
+import { encodeSnapshot } from '../integrations/payload-snapshot.js';
 import {
   externalIntegrationsEnabled, isProdLike, integrationsSecretKey, deliveryConfig,
   integrationsMaxCatchupDays, sanitizeError,
@@ -135,6 +136,25 @@ async function createDueBatches({ pool, cfg, now, gateOn, maxCatchupDays }) {
       part: part.batch.part,
     });
 
+    // Snapshot imutável (Etapa B, S2): o corpo EXATO desta parte é serializado UMA vez aqui e
+    // persistido junto com a metadata no mesmo INSERT (repo.createBatch) — nunca reconstruído na
+    // entrega/retry (ver docs/superpowers/plans/2026-07-28-etapaB-payload-snapshot.md).
+    let snap;
+    try {
+      const rawBody = JSON.stringify(part);
+      snap = encodeSnapshot(rawBody);
+    } catch (e) {
+      // PAYLOAD_TOO_LARGE (ou outro erro de codificação): não crasha o job — loga sanitizado e
+      // pula esta parte (o chunker já mantém ~5MB; isto é só o cinto-e-suspensórios do cap
+      // absoluto de 8MB). A parte fica ausente nesta execução; próximos ciclos não a recriam
+      // sozinhos (a janela avança), então isso é um evento raro que exige atenção operacional.
+      sanitizedLog('payload_snapshot_error', {
+        tenantId: cfg.tenant_id, integrationId: cfg.id, part: part.batch.part, code: sanitizeError(e),
+      });
+      // eslint-disable-next-line no-continue
+      continue;
+    }
+
     // eslint-disable-next-line no-await-in-loop
     const { created } = await createBatch(pool, {
       tenantId: cfg.tenant_id,
@@ -148,6 +168,17 @@ async function createDueBatches({ pool, cfg, now, gateOn, maxCatchupDays }) {
       conversationCount: part.conversations.length,
       messageCount: part.messages.length,
       initialStatus,
+      payloadCompressed: snap.compressed,
+      payloadSha256: snap.sha256,
+      payloadSizeBytes: snap.sizeBytes,
+      payloadEncoding: snap.encoding,
+      targetUrlSnapshot: cfg.target_url,
+      contentOptionsSnapshot: {
+        include_direct: !!cfg.include_direct,
+        include_groups: !!cfg.include_groups,
+        include_from_me: !!cfg.include_from_me,
+        include_audio_transcripts: !!cfg.include_audio_transcripts,
+      },
     });
     if (created) partsCreated += 1;
   }

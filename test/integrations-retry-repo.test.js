@@ -17,6 +17,20 @@ import {
   markBlocked,
   releaseClaim,
 } from '../server/integrations/repo.js';
+import { encodeSnapshot } from '../server/integrations/payload-snapshot.js';
+
+// Helper de teste: snapshot mínimo exigido por createBatch — estes testes exercitam a máquina de
+// estados de retry, não o conteúdo do payload em si.
+function minimalSnapshotParams(marker = 'retry-repo-test') {
+  const snap = encodeSnapshot(JSON.stringify({ marker }));
+  return {
+    payloadCompressed: snap.compressed,
+    payloadSha256: snap.sha256,
+    payloadSizeBytes: snap.sizeBytes,
+    payloadEncoding: snap.encoding,
+    targetUrlSnapshot: 'https://example.com/hook',
+  };
+}
 
 const NOW = new Date('2026-07-28T12:00:00Z');
 
@@ -320,6 +334,7 @@ describe('createBatch — initialStatus', () => {
         windowStart: '2026-07-20 00:00:00', windowEnd: '2026-07-21 00:00:00',
         part: 1, partTotal: 1, idempotencyKey: `idem-blocked-${tenantId}`,
         conversationCount: 0, messageCount: 0, initialStatus: 'blocked',
+        ...minimalSnapshotParams(`blocked-${tenantId}`),
       });
 
       expect(result.created).toBe(true);
@@ -343,6 +358,7 @@ describe('createBatch — initialStatus', () => {
         windowStart: '2026-07-20 00:00:00', windowEnd: '2026-07-21 00:00:00',
         part: 1, partTotal: 1, idempotencyKey: `idem-nodowngrade-${tenantId}`,
         conversationCount: 0, messageCount: 0,
+        ...minimalSnapshotParams(`nodowngrade-${tenantId}`),
       };
 
       const first = await createBatch(conn, { ...params, initialStatus: 'pending' });
