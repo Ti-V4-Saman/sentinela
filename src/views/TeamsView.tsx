@@ -23,9 +23,10 @@ type Team = TeamRow & { tenantId: number; userCount: number; managerCount: numbe
 
 const PAGE_SIZE = 10;
 
-export default function TeamsView() {
+export default function TeamsView({ tenantId: locked }: { tenantId?: number }) {
   const me = getUser();
-  const isSuper = me?.role === 'superadmin';
+  // Modo cliente (locked): lista escopada, filtro de cliente oculto, criação no cliente ativo.
+  const isSuper = me?.role === 'superadmin' && locked == null;
   const toast = useToast();
   const confirm = useConfirm();
 
@@ -66,10 +67,10 @@ export default function TeamsView() {
     const q = search.trim().toLowerCase();
     return teams.filter((t) => {
       const matchesSearch = !q || t.name.toLowerCase().includes(q);
-      const matchesTenant = !isSuper || tenantFilter === 'ALL' || String(t.tenantId) === tenantFilter;
+      const matchesTenant = locked != null ? Number(t.tenantId) === locked : (!isSuper || tenantFilter === 'ALL' || String(t.tenantId) === tenantFilter);
       return matchesSearch && matchesTenant;
     });
-  }, [teams, search, tenantFilter, isSuper]);
+  }, [teams, search, tenantFilter, isSuper, locked]);
 
   const filtering = Boolean(search) || (isSuper && tenantFilter !== 'ALL');
   const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
@@ -86,7 +87,7 @@ export default function TeamsView() {
       await updateTeam(editing!.id, { name: body.name });
       toast.success('Equipe atualizada', `"${body.name}" foi salva.`);
     } else {
-      await createTeam(isSuper ? body : { name: body.name });
+      await createTeam(locked != null ? { name: body.name, tenantId: locked } : (isSuper ? body : { name: body.name }));
       toast.success('Equipe criada', `"${body.name}" foi adicionada.`);
     }
     await load();

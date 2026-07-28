@@ -31,9 +31,10 @@ function useDebounced<T>(value: T, delay = 350) {
 type Counts = { total: number; identified: number; unidentified: number };
 type TenantOption = { id: number; name: string };
 
-export default function ContactsView() {
+export default function ContactsView({ tenantId: locked }: { tenantId?: number }) {
   const me = getUser();
-  const isSuper = me?.role === 'superadmin';
+  // No modo cliente (locked) o escopo é fixo: sem seletor e sem prompt de "selecione um cliente".
+  const isSuper = me?.role === 'superadmin' && locked == null;
   const toast = useToast();
 
   const [contacts, setContacts] = React.useState<ContactRow[]>([]);
@@ -57,7 +58,7 @@ export default function ContactsView() {
   const [identifying, setIdentifying] = React.useState<ContactRow | null>(null);
   const [typesOpen, setTypesOpen] = React.useState(false);
 
-  const tid = isSuper ? (tenantId || undefined) : undefined;
+  const tid = locked != null ? String(locked) : (isSuper ? (tenantId || undefined) : undefined);
   const needsTenant = isSuper && !tenantId;
 
   // Opções (tipos/usuários/tenants) — recarregam ao trocar de cliente (super).

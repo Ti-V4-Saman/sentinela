@@ -30,9 +30,9 @@ function fmt(iso?: string | null) {
   return Number.isNaN(d.getTime()) ? '—' : d.toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
 }
 
-export default function AuditView() {
+export default function AuditView({ tenantId: locked }: { tenantId?: number }) {
   const me = getUser();
-  const isSuper = me?.role === 'superadmin';
+  const isSuper = me?.role === 'superadmin' && locked == null;
 
   const [logs, setLogs] = React.useState<any[]>([]);
   const [total, setTotal] = React.useState(0);
@@ -53,8 +53,8 @@ export default function AuditView() {
     page, limit: PAGE,
     action: action !== 'ALL' ? action : undefined,
     from: from || undefined, to: to || undefined,
-    tenant_id: isSuper && tenantId !== 'ALL' ? tenantId : undefined,
-  }), [page, action, from, to, isSuper, tenantId]);
+    tenant_id: locked != null ? locked : (isSuper && tenantId !== 'ALL' ? tenantId : undefined),
+  }), [page, action, from, to, isSuper, tenantId, locked]);
 
   React.useEffect(() => { setPage(1); }, [action, from, to, tenantId]);
 

@@ -13,6 +13,9 @@ import {
 } from './services/quepasaApi';
 import { getUser, isAdmin as isAdminRole, logout } from './services/authApi';
 import { AppShell } from './components/shell/AppShell';
+import { TenantProvider, useTenant } from './context/TenantContext';
+import { SelectClientPrompt } from './components/shell/SelectClientPrompt';
+import ClientConnectionsView from './views/ClientConnectionsView';
 import ClientsView from './views/ClientsView';
 import UsersView from './views/UsersView';
 import TeamsView from './views/TeamsView';
@@ -31,6 +34,16 @@ import { friendlyError } from './utils/validation';
 import { homeView } from './utils/nav';
 
 export default function App() {
+  const u = getUser();
+  return (
+    <TenantProvider isSuper={u?.role === 'superadmin'}>
+      <AppBody />
+    </TenantProvider>
+  );
+}
+
+function AppBody() {
+  const tenant = useTenant();
   const [currentUser, setCurrentUser] = useState(getUser());
   const admin = isAdminRole();
   const myId = currentUser?.id;
@@ -257,6 +270,21 @@ export default function App() {
   const connectedCount = instances.filter((i) => i.status === 'Connected').length;
   const disconnectedCount = totalCount - connectedCount;
 
+  // Escopo do superadmin no MODO CLIENTE (undefined = global ou papel não-super → backend escopa).
+  const scopeTid = tenant.isSuper && tenant.activeTenant ? tenant.activeTenant.id : undefined;
+  // `key` que muda ao trocar/sair do cliente → remonta as telas, limpando filtros/threads/cache.
+  const scopeKey = tenant.activeTenant?.id ?? 'global';
+
+  // Ao trocar/sair do cliente: fecha diálogos ligados ao tenant anterior; ao SAIR, volta ao Painel.
+  const prevTenantRef = React.useRef(tenant.activeTenant?.id ?? null);
+  React.useEffect(() => {
+    const cur = tenant.activeTenant?.id ?? null;
+    if (cur === prevTenantRef.current) return;
+    prevTenantRef.current = cur;
+    setConnectingInstance(null); setEditTokenInstance(null); setCaptureInstance(null); setIsCreateModalOpen(false);
+    if (cur === null) setActiveView('dashboard'); // saiu do modo cliente → tela global segura
+  }, [tenant.activeTenant]);
+
   return (
     <AppShell
       user={currentUser}
@@ -268,38 +296,48 @@ export default function App() {
       onHome={() => setActiveView(homeView(currentUser?.role))}
     >
       {activeView === 'instances' && (
-        <ConnectionsView
-          instances={filteredInstances}
-          rawCount={instances.length}
-          counts={{ total: totalCount, connected: connectedCount, disconnected: disconnectedCount }}
-          searchQuery={searchQuery}
-          setSearchQuery={setSearchQuery}
-          statusFilter={statusFilter}
-          setStatusFilter={setStatusFilter}
-          onConnect={handleStartConnect}
-          onDisconnect={handleDisconnect}
-          onEditToken={(inst) => setEditTokenInstance(inst)}
-          canMapCapture={admin}
-          onMapCapture={(inst) => setCaptureInstance(inst)}
-          canManage={(inst) => admin || inst.ownerUserId === myId}
-          canCreate={canCreateInstance}
-          onCreate={() => setIsCreateModalOpen(true)}
-          onRefresh={handleRefresh}
-          isRefreshing={isRefreshing}
-          loading={instancesLoading}
-          error={instancesError}
-          onRetry={loadInstances}
-        />
+        tenant.isSuper ? (
+          tenant.activeTenant
+            ? <ClientConnectionsView key={scopeKey} tenantId={tenant.activeTenant.id} />
+            : <SelectClientPrompt kind="connections" />
+        ) : (
+          <ConnectionsView
+            instances={filteredInstances}
+            rawCount={instances.length}
+            counts={{ total: totalCount, connected: connectedCount, disconnected: disconnectedCount }}
+            searchQuery={searchQuery}
+            setSearchQuery={setSearchQuery}
+            statusFilter={statusFilter}
+            setStatusFilter={setStatusFilter}
+            onConnect={handleStartConnect}
+            onDisconnect={handleDisconnect}
+            onEditToken={(inst) => setEditTokenInstance(inst)}
+            canMapCapture={admin}
+            onMapCapture={(inst) => setCaptureInstance(inst)}
+            canManage={(inst) => admin || inst.ownerUserId === myId}
+            canCreate={canCreateInstance}
+            onCreate={() => setIsCreateModalOpen(true)}
+            onRefresh={handleRefresh}
+            isRefreshing={isRefreshing}
+            loading={instancesLoading}
+            error={instancesError}
+            onRetry={loadInstances}
+          />
+        )
       )}
-      {activeView === 'dashboard' && <DashboardView />}
-      {activeView === 'conversations' && <ConversationsView groupMode={false} />}
-      {activeView === 'groups' && <ConversationsView groupMode={true} />}
-      {activeView === 'contacts' && <ContactsView />}
-      {activeView === 'reports' && <ReportsView />}
-      {activeView === 'audit' && <AuditView />}
+      {activeView === 'dashboard' && <DashboardView key={scopeKey} tenantId={scopeTid} />}
+      {activeView === 'conversations' && (
+        tenant.isGlobalView ? <SelectClientPrompt kind="conversations" /> : <ConversationsView key={scopeKey} groupMode={false} tenantId={scopeTid} />
+      )}
+      {activeView === 'groups' && (
+        tenant.isGlobalView ? <SelectClientPrompt kind="groups" /> : <ConversationsView key={scopeKey} groupMode={true} tenantId={scopeTid} />
+      )}
+      {activeView === 'contacts' && <ContactsView key={scopeKey} tenantId={scopeTid} />}
+      {activeView === 'reports' && <ReportsView key={scopeKey} tenantId={scopeTid} />}
+      {activeView === 'audit' && <AuditView key={scopeKey} tenantId={scopeTid} />}
       {activeView === 'tenants' && <ClientsView />}
-      {activeView === 'users' && <UsersView />}
-      {activeView === 'teams' && <TeamsView />}
+      {activeView === 'users' && <UsersView key={scopeKey} tenantId={scopeTid} />}
+      {activeView === 'teams' && <TeamsView key={scopeKey} tenantId={scopeTid} />}
 
       {/* Modais */}
       {connectingInstance && (

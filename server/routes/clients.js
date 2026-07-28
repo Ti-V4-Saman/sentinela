@@ -43,6 +43,13 @@ export function createClientsRouter(pool) {
     }
   });
 
+  // ---- GET /:id — validação/carregamento do cliente (para o seletor de tenant do superadmin) ----
+  // Revalida no backend que o ator pode atuar neste tenant (superadmin: qualquer; admin: só o
+  // próprio). Cross-tenant/inexistente → 404 (via router.param). Não expõe nada sensível.
+  router.get('/:id', async (req, res) => {
+    res.json({ id: req.client.id, name: req.client.name, status: req.client.status });
+  });
+
   // ---- Visão geral / KPIs (agregado, nº fixo de COUNTs — sem N+1) ----
   router.get('/:id/overview', async (req, res) => {
     try {
