@@ -168,9 +168,14 @@ export async function listAttempts(pool, tenantId, batchId) {
 // insert, na mesma conexão/transação do chamador — suficiente para uso single-writer-per-key deste
 // job. O INSERT ... ON DUPLICATE KEY UPDATE continua como cinto-e-suspensórios para a corrida rara
 // (outra conexão insere entre o SELECT e o INSERT desta chamada).
+// `initialStatus` (default 'pending') é usado SÓ no INSERT — o chamador (job) passa 'pending' com
+// o gate ligado ou 'blocked' com o gate desligado (R4). Nunca faz downgrade de uma linha já
+// existente: se a tupla de idempotência/janela já existe (colisão detectada pelo SELECT prévio),
+// esta chamada retorna a linha existente tal como está, mesmo que `initialStatus` seja diferente do
+// status atual dela.
 export async function createBatch(pool, {
   tenantId, integrationId, schemaVersion, windowStart, windowEnd, part = 1, partTotal = 1,
-  idempotencyKey, conversationCount = 0, messageCount = 0,
+  idempotencyKey, conversationCount = 0, messageCount = 0, initialStatus = 'pending',
 }) {
   const [existingRows] = await pool.query(
     `SELECT id FROM integration_delivery_batches
@@ -188,11 +193,11 @@ export async function createBatch(pool, {
     `INSERT INTO integration_delivery_batches
        (tenant_id, integration_id, schema_version, window_start, window_end, part, part_total,
         idempotency_key, status, conversation_count, message_count)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON DUPLICATE KEY UPDATE id = LAST_INSERT_ID(id)`,
     [
       tenantId, integrationId, schemaVersion, windowStart, windowEnd, part, partTotal,
-      idempotencyKey, conversationCount, messageCount,
+      idempotencyKey, initialStatus, conversationCount, messageCount,
     ],
   );
   // Corrida rara (outra conexão inseriu entre o SELECT e o INSERT desta): o ON DUPLICATE KEY
@@ -219,6 +224,151 @@ export async function setBatchStatus(pool, tenantId, batchId, status) {
   await pool.query(
     'UPDATE integration_delivery_batches SET status = ? WHERE tenant_id = ? AND id = ?',
     [status, tenantId, batchId],
+  );
+}
+
+// ---- máquina de estados de entrega/retry (R2/R3/R4) — primitivas persistidas ----
+//
+// `integration_delivery_batches.status` ∈ { pending, blocked, delivering, pending_retry, delivered,
+// failed } (ver migrations/20260801140000_integration_retry_fields.cjs e o plano, seção "Máquina de
+// estados de entrega/retry"). As funções abaixo são as primitivas de baixo nível que o JOB (próxima
+// tarefa) orquestra em um ciclo de despacho; nenhuma delas decide sozinha a política de quando
+// rodar — só executam a transição pedida de forma atômica/segura.
+//
+// Note: estas funções operam por `batchId` (não recebem tenantId como filtro adicional) porque o
+// job já obtém o batchId a partir de consultas tenant-aware (listDueBatches inclui tenant_id na
+// linha retornada) — mas nada aqui impede adicionar `AND tenant_id = ?` se um chamador futuro
+// precisar reforçar o filtro; por ora seguem o padrão mínimo pedido no plano.
+
+// Tenta reivindicar um batch para uma tentativa de entrega, atomicamente: só transiciona para
+// `delivering` se o batch estiver num status elegível E (sem next_attempt_at OU já vencido). Esta é
+// a GUARDA DE CONCORRÊNCIA central — um UPDATE condicional cujo `affectedRows` diz se ESTA chamada
+// venceu a corrida (1) ou se outra já tinha pego o batch primeiro (0). Um segundo
+// worker/reenvio-manual concorrente na mesma linha sempre recebe `claimed:false` (WHERE já não
+// casa mais depois que o primeiro mudou o status).
+//
+// `includeBlocked` (default false): batches `blocked` só entram no WHERE IN(...) quando o chamador
+// sinaliza explicitamente que o gate está ON (R4 — batches blocked não devem ser reivindicados por
+// engano enquanto o gate segue desligado).
+export async function claimBatchForAttempt(pool, batchId, { now, includeBlocked = false }) {
+  const statuses = includeBlocked
+    ? ['pending', 'pending_retry', 'blocked']
+    : ['pending', 'pending_retry'];
+  const placeholders = statuses.map(() => '?').join(', ');
+
+  const [result] = await pool.query(
+    `UPDATE integration_delivery_batches
+       SET status = 'delivering', last_attempt_at = ?, updated_at = NOW()
+     WHERE id = ? AND status IN (${placeholders}) AND (next_attempt_at IS NULL OR next_attempt_at <= ?)`,
+    [now, batchId, ...statuses, now],
+  );
+  return { claimed: result.affectedRows === 1 };
+}
+
+// Lista os batches elegíveis para uma tentativa NESTE ciclo do job — usada pelo job para saber por
+// quais batches iterar (não reivindica nada sozinha; o job ainda chama claimBatchForAttempt por
+// batch antes de tentar, para a guarda de concorrência valer mesmo com múltiplos workers).
+//
+// Elegibilidade: status IN ('pending','pending_retry') sempre; mais 'blocked' quando `gateOn` (R4 —
+// batches criados com o gate desligado só voltam a ser candidatos quando o gate liga). Em ambos os
+// casos, respeita `next_attempt_at IS NULL OR next_attempt_at <= now`.
+//
+// `maxCatchupDays` (opcional): quando informado, EXCLUI batches `blocked` cujo `window_end` seja
+// mais antigo que `now - maxCatchupDays` dias — protege contra uma rajada de entregas antigas ao
+// ligar o gate depois de muito tempo desligado (retenção de catchup, R4). Só se aplica a 'blocked';
+// 'pending'/'pending_retry' nunca são excluídos por idade (são o fluxo normal, não histórico
+// represado). Batches blocked mais antigos que o catchup permanecem 'blocked' (histórico) — NÃO são
+// marcados 'failed' por retenção.
+export async function listDueBatches(pool, { now, gateOn, limit = 100, maxCatchupDays = null }) {
+  const statuses = gateOn ? ['pending', 'pending_retry', 'blocked'] : ['pending', 'pending_retry'];
+  const placeholders = statuses.map(() => '?').join(', ');
+
+  const conditions = [
+    `status IN (${placeholders})`,
+    '(next_attempt_at IS NULL OR next_attempt_at <= ?)',
+  ];
+  const args = [...statuses, now];
+
+  if (gateOn && maxCatchupDays != null) {
+    // blocked antigo demais: excluído. pending/pending_retry: nunca excluídos por esta cláusula
+    // (a condição só restringe quando status = 'blocked').
+    conditions.push("(status <> 'blocked' OR window_end >= DATE_SUB(?, INTERVAL ? DAY))");
+    args.push(now, maxCatchupDays);
+  }
+
+  const [rows] = await pool.query(
+    `SELECT id, tenant_id, integration_id, window_start, window_end, part, part_total,
+            schema_version, status, attempt_count, next_attempt_at, last_attempt_at, idempotency_key
+     FROM integration_delivery_batches
+     WHERE ${conditions.join(' AND ')}
+     ORDER BY next_attempt_at IS NULL DESC, next_attempt_at ASC, created_at ASC
+     LIMIT ?`,
+    [...args, limit],
+  );
+  return rows;
+}
+
+// Agenda o retry após uma tentativa FALHA. `attemptCount` é o número de tentativas já feitas até
+// agora (1-based; inclui a que acabou de falhar). Se esgotou `maxAttempts` → status `failed`
+// (terminal), `next_attempt_at = NULL`. Senão → `pending_retry`, `attempt_count` gravado, e
+// `next_attempt_at = now + backoffMinutes[attemptCount-1]` minutos (índice 0-based: depois da 1ª
+// falha usa backoffMinutes[0]=2min, depois da 2ª usa backoffMinutes[1]=6min, etc — ver
+// deliveryConfig().backoffMinutes em config.js). Calculado em JS/UTC e armazenado como DATETIME.
+export async function scheduleRetry(pool, batchId, {
+  attemptCount, now, backoffMinutes, maxAttempts,
+}) {
+  if (attemptCount >= maxAttempts) {
+    await pool.query(
+      `UPDATE integration_delivery_batches
+         SET status = 'failed', attempt_count = ?, next_attempt_at = NULL, updated_at = NOW()
+       WHERE id = ?`,
+      [attemptCount, batchId],
+    );
+    return { status: 'failed', next_attempt_at: null };
+  }
+
+  const delayMinutes = backoffMinutes[attemptCount - 1];
+  const nextAttemptAt = new Date(now.getTime() + delayMinutes * 60_000);
+
+  await pool.query(
+    `UPDATE integration_delivery_batches
+       SET status = 'pending_retry', attempt_count = ?, next_attempt_at = ?, updated_at = NOW()
+     WHERE id = ?`,
+    [attemptCount, nextAttemptAt, batchId],
+  );
+  return { status: 'pending_retry', next_attempt_at: nextAttemptAt };
+}
+
+// Marca sucesso definitivo (terminal) — cancela qualquer retry pendente. Idempotente: o WHERE
+// `status <> 'delivered'` faz uma segunda chamada virar no-op silencioso em vez de erro.
+export async function markDelivered(pool, batchId, { now }) {
+  await pool.query(
+    `UPDATE integration_delivery_batches
+       SET status = 'delivered', next_attempt_at = NULL, updated_at = ?
+     WHERE id = ? AND status <> 'delivered'`,
+    [now, batchId],
+  );
+}
+
+// Marca o batch como `blocked` — usado quando (a) um batch é criado com o gate OFF (ver
+// `createBatch(..., { initialStatus: 'blocked' })`), ou (b) uma tentativa em `delivering` descobre
+// que o gate foi desligado no meio do caminho e precisa recuar sem contar como falha.
+export async function markBlocked(pool, batchId) {
+  await pool.query(
+    `UPDATE integration_delivery_batches SET status = 'blocked', updated_at = NOW() WHERE id = ?`,
+    [batchId],
+  );
+}
+
+// Desfaz uma reivindicação (`delivering`) sem registrar uma tentativa/falha — usado quando o job
+// reivindicou o batch mas não conseguiu prosseguir por um motivo que não é uma falha de entrega
+// real (ex.: gate caiu entre o claim e o envio). Volta para `toStatus` (tipicamente o status
+// anterior ao claim: 'pending', 'pending_retry' ou 'blocked') sem tocar em attempt_count/
+// next_attempt_at — a tentativa não aconteceu, então nada do estado de retry deve avançar.
+export async function releaseClaim(pool, batchId, { toStatus }) {
+  await pool.query(
+    `UPDATE integration_delivery_batches SET status = ?, updated_at = NOW() WHERE id = ?`,
+    [toStatus, batchId],
   );
 }
 

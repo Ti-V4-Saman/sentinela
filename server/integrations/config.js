@@ -11,6 +11,13 @@ export function externalIntegrationsEnabled() {
 }
 
 // Constantes compartilhadas de entrega (verbatim do plano — seção "Constantes compartilhadas").
+//
+// backoffMinutes: atraso (em minutos) antes de CADA tentativa após uma falha — índice 0 é o atraso
+// aplicado depois da 1ª falha (attempt_count=1), índice 1 depois da 2ª falha, etc. A 1ª tentativa em
+// si é sempre imediata (next_attempt_at NULL na criação do batch). maxAttempts=5 → no máximo 4
+// retries agendados (backoffMinutes tem 4 posições); esgotado o array/maxAttempts, o batch vai para
+// `failed`. Ver docs/superpowers/plans/2026-07-28-etapaB-hardening.md, seção "Máquina de estados de
+// entrega/retry (R2/R3/R4)".
 export function deliveryConfig() {
   return {
     timeoutMs: 15000,
@@ -20,7 +27,23 @@ export function deliveryConfig() {
     chunkMaxBytes: 5_000_000,
     successMin: 200,
     successMax: 299,
+    backoffMinutes: [2, 6, 18, 54],
   };
+}
+
+// Retenção de catchup para batches `blocked` (gate OFF) — quantos dias no passado o job ainda
+// entrega automaticamente quando o gate liga. Batches `blocked` mais antigos que N dias NÃO são
+// entregues automaticamente (ficam como histórico/`blocked` — nunca forçados a `failed` só por
+// retenção; ver plano, seção "Gate off + avanço de janela + catchup (R4)"). Lazy (lê env a cada
+// chamada, nunca cacheia), igual às demais funções deste módulo. Default 7; valida inteiro positivo.
+export function integrationsMaxCatchupDays() {
+  const raw = process.env.INTEGRATIONS_MAX_CATCHUP_DAYS;
+  if (raw === undefined || raw === '') return 7;
+  const n = Number(raw);
+  if (!Number.isInteger(n) || n <= 0) {
+    throw new Error('INTEGRATIONS_MAX_CATCHUP_DAYS inválido — deve ser um inteiro positivo (dias)');
+  }
+  return n;
 }
 
 // true em qualquer ambiente exceto teste — usado para decidir `allowHttp` na defesa SSRF
