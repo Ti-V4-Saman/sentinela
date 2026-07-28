@@ -269,10 +269,13 @@ export async function runDispatch({
 // ---- CLI entry point ----
 async function main() {
   const { default: pool } = await import('../db.js');
+  // NÃO passa `fetchImpl` aqui: produção deve sempre usar o transporte seguro (secureDeliver,
+  // transport.js) preso ao IP validado (anti DNS-rebinding). `fetchImpl` só existe para os
+  // testes injetarem um mock determinístico — em produção o default (undefined) faz
+  // `deliverBatch` usar `secureDeliver`.
   const result = await runDispatch({
     pool,
     now: new Date(),
-    fetchImpl: fetch,
     allowHttp: !isProdLike(),
   });
   await pool.end();

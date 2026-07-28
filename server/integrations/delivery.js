@@ -1,9 +1,19 @@
 // Entrega HTTP do batch (Etapa B — integração em lote): gate global, defesa SSRF a cada entrega
 // (incluindo redirects manuais), timeout, sucesso só 200–299, erro sempre sanitizado.
 //
-// Nunca segue redirect automaticamente (fetch é chamado com `redirect: 'manual'`): cada hop de
-// redirect é validado por `checkRedirectTarget` (SSRF) ANTES de ser seguido — delegar isso ao
-// cliente HTTP reabriria o vetor SSRF que `ssrf.js` fecha.
+// Transporte (R1 — hardening anti DNS-rebinding): por padrão (sem `fetchImpl` explícito) a entrega
+// usa `secureDeliver` (transport.js), que reaproveita a MESMA validação SSRF hop-a-hop mas prende a
+// conexão TCP ao IP já validado (via `lookup` do node:http(s)) — elimina a janela de rebinding entre
+// validação e conexão que existiria usando `fetch` (que faz sua própria resolução DNS depois de
+// `assertSafeUrl` já ter validado). `fetchImpl` continua aceito por compatibilidade com os testes
+// existentes (mock determinístico de rede) — quando fornecido, usa o caminho antigo baseado em
+// fetch+checkRedirectTarget; produção (rotas e job) NUNCA passa `fetchImpl`, então sempre usa o
+// transporte seguro.
+//
+// Nunca segue redirect automaticamente: no caminho `fetchImpl` (fetch é chamado com
+// `redirect: 'manual'`) cada hop é validado por `checkRedirectTarget` (SSRF) ANTES de ser seguido;
+// no caminho `secureDeliver` cada hop é revalidado do zero internamente (transport.js). Delegar o
+// "seguir redirect" a um cliente HTTP reabriria o vetor SSRF que `ssrf.js` fecha.
 //
 // Erros são reduzidos a códigos curtos e sanitizados (nunca secret, nunca URL crua, nunca corpo de
 // resposta): `EXTERNAL_INTEGRATIONS_DISABLED`, `SSRF_BLOCKED:<reason>`, `REDIRECT_BLOCKED`,
@@ -12,21 +22,13 @@
 import { assertSafeUrl, checkRedirectTarget } from './ssrf.js';
 import { buildHeaders } from './signature.js';
 import { externalIntegrationsEnabled, deliveryConfig } from './config.js';
+import { secureDeliver } from './transport.js';
 
-// Executa uma única tentativa de entrega. Nunca lança: qualquer falha vira
-// `{ status: 'failure', ... }`.
-export async function deliverBatch({
-  integration, secretPlaintext, batchRow, rawBody, timestamp, deliveryId, idempotencyKey,
-  fetchImpl = fetch, allowHttp = false,
+// Caminho legado (só usado quando o chamador injeta `fetchImpl` explicitamente — hoje só os
+// testes): fetch + assertSafeUrl/checkRedirectTarget separados. NÃO é o caminho de produção.
+async function deliverViaFetchImpl({
+  integration, rawBody, headers, fetchImpl, allowHttp, cfg, startedAt,
 }) {
-  if (!externalIntegrationsEnabled()) {
-    // Gate global desligado: NUNCA chama fetchImpl, NUNCA finge sucesso.
-    return { status: 'failure', http_code: null, duration_ms: 0, error: 'EXTERNAL_INTEGRATIONS_DISABLED' };
-  }
-
-  const cfg = deliveryConfig();
-  const startedAt = Date.now();
-
   const targetCheck = await assertSafeUrl(integration.target_url, { allowHttp });
   if (!targetCheck.ok) {
     return {
@@ -34,14 +36,6 @@ export async function deliverBatch({
       error: `SSRF_BLOCKED:${targetCheck.reason}`,
     };
   }
-
-  const headers = {
-    'Content-Type': 'application/json',
-    ...buildHeaders({
-      rawBody, secret: secretPlaintext, timestamp, deliveryId,
-      schemaVersion: batchRow.schema_version, idempotencyKey,
-    }),
-  };
 
   let currentUrl = integration.target_url;
   let redirects = 0;
@@ -115,13 +109,60 @@ export async function deliverBatch({
   }
 }
 
+// Executa uma única tentativa de entrega. Nunca lança: qualquer falha vira
+// `{ status: 'failure', ... }`.
+export async function deliverBatch({
+  integration, secretPlaintext, batchRow, rawBody, timestamp, deliveryId, idempotencyKey,
+  fetchImpl, allowHttp = false, lookupImpl,
+}) {
+  if (!externalIntegrationsEnabled()) {
+    // Gate global desligado: NUNCA conecta (nem fetchImpl nem secureDeliver), NUNCA finge sucesso.
+    return { status: 'failure', http_code: null, duration_ms: 0, error: 'EXTERNAL_INTEGRATIONS_DISABLED' };
+  }
+
+  const cfg = deliveryConfig();
+  const startedAt = Date.now();
+
+  const headers = {
+    'Content-Type': 'application/json',
+    ...buildHeaders({
+      rawBody, secret: secretPlaintext, timestamp, deliveryId,
+      schemaVersion: batchRow.schema_version, idempotencyKey,
+    }),
+  };
+
+  if (typeof fetchImpl === 'function') {
+    return deliverViaFetchImpl({ integration, rawBody, headers, fetchImpl, allowHttp, cfg, startedAt });
+  }
+
+  const result = await secureDeliver({
+    url: integration.target_url,
+    method: 'POST',
+    headers,
+    body: rawBody,
+    allowHttp,
+    timeoutMs: cfg.timeoutMs,
+    maxRedirects: cfg.maxRedirects,
+    ...(lookupImpl ? { lookupImpl } : {}),
+  });
+
+  // secureDeliver já mede duration_ms desde sua própria chamada; recalcula com o startedAt desta
+  // tentativa (inclui o tempo de montagem de headers, desprezível) para manter o contrato existente.
+  return {
+    status: result.status,
+    http_code: result.http_code,
+    duration_ms: Date.now() - startedAt,
+    ...(result.error ? { error: result.error } : {}),
+  };
+}
+
 // Tenta entregar até `maxAttempts` vezes. Documenta o backoff-alvo (2s, 6s, 18s, 54s — base 2s,
 // fator 3, jitter) mas NÃO bloqueia esperando entre tentativas aqui: em produção o job (Task 9)
 // reagenda por vencimento em vez de dormir; nos testes as tentativas rodam imediatamente com o
 // mock. Cada tentativa (se `recordAttempt` for passado) é persistida via repo.recordAttempt.
 export async function runWithRetries({
   integration, secretPlaintext, batchRow, rawBody, timestamp, deliveryId, idempotencyKey,
-  fetchImpl = fetch, allowHttp = false, recordAttempt, maxAttempts,
+  fetchImpl, allowHttp = false, lookupImpl, recordAttempt, maxAttempts,
 }) {
   const attempts = maxAttempts ?? deliveryConfig().maxAttempts;
   let lastResult = null;
@@ -130,7 +171,7 @@ export async function runWithRetries({
     // eslint-disable-next-line no-await-in-loop
     lastResult = await deliverBatch({
       integration, secretPlaintext, batchRow, rawBody, timestamp, deliveryId, idempotencyKey,
-      fetchImpl, allowHttp,
+      fetchImpl, allowHttp, lookupImpl,
     });
 
     if (recordAttempt) {

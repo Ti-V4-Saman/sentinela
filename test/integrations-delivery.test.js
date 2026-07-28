@@ -190,6 +190,68 @@ describe('deliverBatch — ligado, mock de rede', () => {
   });
 });
 
+// R1 — hardening anti DNS-rebinding: quando NENHUM fetchImpl é passado (o caso real de produção —
+// rotas e job nunca passam fetchImpl), deliverBatch delega ao transporte seguro (secureDeliver,
+// transport.js), que prende a conexão TCP ao IP já validado por assertSafeUrl. Estes testes não
+// abrem socket real (nenhum servidor local aqui) — o alvo público fictício nunca é alcançável, e
+// isso é exatamente o ponto: provam que a defesa (bloqueio SSRF / não-segunda-resolução) age ANTES
+// de qualquer tentativa de conexão de rede, sem depender de fetchImpl. O caminho de socket real
+// (handshake TLS/SNI/Host contra servidor local) é coberto em test/integrations-transport.test.js.
+describe('deliverBatch — sem fetchImpl (produção): usa o transporte seguro (secureDeliver) com lookupImpl injetado', () => {
+  it('URL alvo com DNS resolvendo para IP privado é bloqueada (SSRF_BLOCKED) sem fetchImpl', async () => {
+    process.env.EXTERNAL_INTEGRATIONS_ENABLED = 'true';
+    const lookupImpl = async () => [{ address: '10.0.0.5', family: 4 }];
+
+    const result = await deliverBatch(baseArgs({
+      fetchImpl: undefined,
+      lookupImpl,
+      integration: { ...baseIntegration, target_url: 'https://internal-only.example/webhook' },
+      allowHttp: false,
+    }));
+
+    expect(result.status).toBe('failure');
+    expect(result.error).toMatch(/^SSRF_BLOCKED:/);
+  });
+
+  it('anti-rebinding: lookupImpl (validação) é chamado exatamente 1 vez por tentativa — nunca uma 2ª resolução', async () => {
+    process.env.EXTERNAL_INTEGRATIONS_ENABLED = 'true';
+    let calls = 0;
+    const lookupImpl = async () => {
+      calls += 1;
+      // Se houvesse uma 2ª resolução (rebinding), devolveria metadata — nunca deve ser alcançada
+      // pelo cliente HTTP, que usa apenas o IP já validado pela 1ª chamada.
+      return calls === 1
+        ? [{ address: '93.184.216.34', family: 4 }]
+        : [{ address: '169.254.169.254', family: 4 }];
+    };
+
+    const result = await deliverBatch(baseArgs({
+      fetchImpl: undefined,
+      lookupImpl,
+      integration: { ...baseIntegration, target_url: 'https://example.com/webhook' },
+      allowHttp: false,
+    }));
+
+    // Sem servidor real escutando em example.com/93.184.216.34 de verdade, a conexão falha
+    // (NETWORK/TIMEOUT) — o que importa aqui é que o resolver só foi consultado 1 vez: a defesa
+    // nunca dá ao atacante uma segunda chance de trocar a resposta DNS.
+    expect(result.status).toBe('failure');
+    expect(calls).toBe(1);
+  });
+
+  it('gate desligado: nem lookupImpl nem qualquer conexão são chamados', async () => {
+    delete process.env.EXTERNAL_INTEGRATIONS_ENABLED;
+    let called = false;
+    const lookupImpl = async () => { called = true; return [{ address: '93.184.216.34', family: 4 }]; };
+
+    const result = await deliverBatch(baseArgs({ fetchImpl: undefined, lookupImpl }));
+
+    expect(called).toBe(false);
+    expect(result.status).toBe('failure');
+    expect(result.error).toBe('EXTERNAL_INTEGRATIONS_DISABLED');
+  });
+});
+
 // Regressão do defeito C1 (crítico): antes desta correção, o servidor assinava deliveries com o
 // HASH persistido (sha256 do secret), não com o PLAINTEXT que o usuário copiou uma única vez da
 // UI — um receptor real, que só tem o plaintext, NUNCA conseguia validar a assinatura recebida.
