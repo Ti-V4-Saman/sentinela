@@ -22,8 +22,14 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import knexFactory from 'knex';
 import knexConfig from '../knexfile.cjs';
 import { getPool, applyMigrations } from './helpers/db.js';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import path from 'node:path';
 import migration from '../migrations/20260801120000_integrations.cjs';
 import secretMigration from '../migrations/20260801130000_integrations_secret_encrypted.cjs';
+import retryMigration from '../migrations/20260801140000_integration_retry_fields.cjs';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const THROWAWAY_DB = 'sentinela_migtest_b1';
 
@@ -128,10 +134,25 @@ describe('migration integrations — estado do schema compartilhado (aditivo, se
     }
   });
 
-  it('re-rodar up() é idempotente (no-op, não lança) — seguro rodar em paralelo com outros arquivos', async () => {
+  // NOTA (introduzida por 20260801140000_integration_retry_fields.cjs, migration R2 — máquina de
+  // estados de entrega/retry): esta migration (120000) já estava aplicada no banco de teste
+  // compartilhado e é imutável (regra do projeto), então BATCH_COLUMNS.status continua fixado no
+  // enum ANTIGO de 4 valores ("enum('pending','delivering','delivered','failed')") e
+  // reconcileExistingTable() faz comparação EXATA de string (validateColumn, sem `anyOf` — ao
+  // contrário de secret_hash/secret_encrypted, aqui o NOME da coluna não muda, só o conjunto de
+  // valores, e o `anyOf` só cobre nomes alternativos). Depois que 140000 estende `status` para 6
+  // valores no banco compartilhado, re-invocar migration.up(knex) diretamente (bypassando o
+  // controle de versão do Knex) passa a lançar INCOMPATIBLE de propósito — sinaliza corretamente
+  // que o schema real diverge da definição fixa desta migration antiga. Isso é esperado e correto;
+  // a idempotência real do fluxo é garantida por `knex.migrate.latest()` (aplica cada migration
+  // uma única vez, nunca re-executa 120000 depois de 140000), exercitada em applyMigrations() no
+  // beforeAll. Este teste passa a documentar o throw em vez de assumir no-op.
+  it('re-rodar up() diretamente após 140000 estender o enum status lança INCOMPATIBLE (comportamento esperado — ver nota acima); knex.migrate.latest() nunca re-executa 120000, então o fluxo real permanece idempotente', async () => {
     const knex = knexFactory(knexConfig.development);
     try {
-      await expect(migration.up(knex)).resolves.not.toThrow();
+      await expect(migration.up(knex)).rejects.toThrow(/INCOMPATIBLE/i);
+      // as tabelas continuam existindo e íntegras — o throw ocorre só na validação do enum, após
+      // as duas primeiras tabelas (tenant_integrations, já reconciliada) terem sido processadas.
       expect(await migration._helpers.tableExists(knex, 'tenant_integrations')).toBe(true);
       expect(await migration._helpers.tableExists(knex, 'integration_delivery_batches')).toBe(true);
       expect(await migration._helpers.tableExists(knex, 'integration_delivery_attempts')).toBe(true);
@@ -269,5 +290,128 @@ describe('migration integrations_secret_encrypted — reversibilidade (down) em 
     const downSrc = secretMigration.down.toString();
     expect(upSrc).toMatch(/CHANGE COLUMN \$\{OLD_COL\} \$\{NEW_COL\}/);
     expect(downSrc).toMatch(/CHANGE COLUMN \$\{NEW_COL\} \$\{OLD_COL\}/);
+  });
+});
+
+// ---- 20260801140000_integration_retry_fields.cjs (R2 — máquina de estados de entrega/retry) ----
+// Adiciona attempt_count/next_attempt_at/last_attempt_at + estende o enum status com
+// 'blocked'/'pending_retry' + índice idx_batch_due. Roda via applyMigrations() no beforeAll deste
+// arquivo (knex.migrate.latest() aplica TODAS as pendentes, incluindo esta).
+describe('migration integration_retry_fields — campos e enum no banco compartilhado', () => {
+  it('integration_delivery_batches tem attempt_count/next_attempt_at/last_attempt_at', async () => {
+    const knex = knexFactory(knexConfig.development);
+    try {
+      expect(await retryMigration._helpers.columnExists(knex, 'integration_delivery_batches', 'attempt_count')).toBe(true);
+      expect(await retryMigration._helpers.columnExists(knex, 'integration_delivery_batches', 'next_attempt_at')).toBe(true);
+      expect(await retryMigration._helpers.columnExists(knex, 'integration_delivery_batches', 'last_attempt_at')).toBe(true);
+    } finally {
+      await knex.destroy();
+    }
+  });
+
+  it('status ENUM foi estendido com blocked e pending_retry', async () => {
+    const knex = knexFactory(knexConfig.development);
+    try {
+      const row = await retryMigration._helpers.columnRow(knex, 'integration_delivery_batches', 'status');
+      expect(row).toBeTruthy();
+      expect(row.COLUMN_TYPE).toMatch(/'blocked'/);
+      expect(row.COLUMN_TYPE).toMatch(/'pending_retry'/);
+      // ainda contém os 4 valores originais
+      for (const v of ['pending', 'delivering', 'delivered', 'failed']) {
+        expect(row.COLUMN_TYPE).toMatch(new RegExp(`'${v}'`));
+      }
+    } finally {
+      await knex.destroy();
+    }
+  });
+
+  it('cria o índice idx_batch_due (tenant_id, status, next_attempt_at)', async () => {
+    const knex = knexFactory(knexConfig.development);
+    try {
+      expect(await retryMigration._helpers.indexExists(knex, 'integration_delivery_batches', 'idx_batch_due')).toBe(true);
+    } finally {
+      await knex.destroy();
+    }
+  });
+
+  it('re-rodar up() é idempotente (no-op, não lança) — seguro em paralelo com outros arquivos', async () => {
+    const knex = knexFactory(knexConfig.development);
+    try {
+      await expect(retryMigration.up(knex)).resolves.not.toThrow();
+      expect(await retryMigration._helpers.columnExists(knex, 'integration_delivery_batches', 'attempt_count')).toBe(true);
+      const row = await retryMigration._helpers.columnRow(knex, 'integration_delivery_batches', 'status');
+      expect(row.COLUMN_TYPE).toMatch(/'blocked'/);
+      expect(row.COLUMN_TYPE).toMatch(/'pending_retry'/);
+    } finally {
+      await knex.destroy();
+    }
+  });
+});
+
+describe('migration integration_retry_fields — reversibilidade (down) em schema isolado descartável', () => {
+  it('up() adiciona campos/estende enum e down() reverte, só no schema isolado', async (ctx) => {
+    if (!canCreateDatabase) {
+      ctx.skip('Usuário de teste sem privilégio CREATE DATABASE — down() coberto só por inspeção estática abaixo.');
+      return;
+    }
+    const knex = makeThrowawayKnex();
+    try {
+      await migration.up(knex); // cria as 3 tabelas (status enum original de 4 valores)
+      await retryMigration.up(knex);
+
+      expect(await retryMigration._helpers.columnExists(knex, 'integration_delivery_batches', 'attempt_count')).toBe(true);
+      expect(await retryMigration._helpers.columnExists(knex, 'integration_delivery_batches', 'next_attempt_at')).toBe(true);
+      expect(await retryMigration._helpers.columnExists(knex, 'integration_delivery_batches', 'last_attempt_at')).toBe(true);
+      expect(await retryMigration._helpers.indexExists(knex, 'integration_delivery_batches', 'idx_batch_due')).toBe(true);
+      let row = await retryMigration._helpers.columnRow(knex, 'integration_delivery_batches', 'status');
+      expect(row.COLUMN_TYPE).toMatch(/'blocked'/);
+      expect(row.COLUMN_TYPE).toMatch(/'pending_retry'/);
+
+      await retryMigration.down(knex);
+
+      expect(await retryMigration._helpers.columnExists(knex, 'integration_delivery_batches', 'attempt_count')).toBe(false);
+      expect(await retryMigration._helpers.columnExists(knex, 'integration_delivery_batches', 'next_attempt_at')).toBe(false);
+      expect(await retryMigration._helpers.columnExists(knex, 'integration_delivery_batches', 'last_attempt_at')).toBe(false);
+      expect(await retryMigration._helpers.indexExists(knex, 'integration_delivery_batches', 'idx_batch_due')).toBe(false);
+      row = await retryMigration._helpers.columnRow(knex, 'integration_delivery_batches', 'status');
+      expect(row.COLUMN_TYPE).not.toMatch(/'blocked'/);
+      expect(row.COLUMN_TYPE).not.toMatch(/'pending_retry'/);
+    } finally {
+      await migration.down(knex);
+      await knex.destroy();
+    }
+  });
+
+  it('documenta se o schema isolado pôde ser criado nesta execução (fallback sem CREATE DATABASE)', () => {
+    if (!canCreateDatabase) {
+      console.warn('[integrations-migration.test.js] retry_fields: down() validado só por inspeção estática.');
+    }
+    const upSrc = retryMigration.up.toString();
+    expect(upSrc).toMatch(/attempt_count/);
+    // dropColumnIfPresent (usada por down()) não é exposta em _helpers; inspeciona o arquivo
+    // inteiro para confirmar que down() de fato emite DROP COLUMN.
+    const fileSrc = readFileSync(path.join(__dirname, '../migrations/20260801140000_integration_retry_fields.cjs'), 'utf8');
+    expect(fileSrc).toMatch(/DROP COLUMN/);
+  });
+});
+
+describe('migration integration_retry_fields — incompatibilidade em schema isolado descartável', () => {
+  it('lança erro explícito (INCOMPATIBLE) se status já for um ENUM diferente/incompatível', async (ctx) => {
+    if (!canCreateDatabase) {
+      ctx.skip('Usuário de teste sem privilégio CREATE DATABASE — cenário de incompatibilidade não pode ser montado num schema isolado.');
+      return;
+    }
+    const knex = makeThrowawayKnex();
+    try {
+      await migration.up(knex); // cria as 3 tabelas com status enum original
+      // simula um estado incompatível: outro deploy já alterou o enum para algo que não é nem o
+      // conjunto antigo (4 valores) nem o novo (6 valores) desta migration.
+      await knex.raw("ALTER TABLE integration_delivery_batches MODIFY COLUMN status ENUM('pending','sent') NOT NULL DEFAULT 'pending'");
+
+      await expect(retryMigration.up(knex)).rejects.toThrow(/INCOMPATIBLE/i);
+    } finally {
+      await migration.down(knex);
+      await knex.destroy();
+    }
   });
 });
