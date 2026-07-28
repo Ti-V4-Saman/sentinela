@@ -15,6 +15,7 @@ import { createContactsRouter } from './routes/contacts.js';
 import { createClientsRouter } from './routes/clients.js';
 import { createReportsRouter } from './routes/reports.js';
 import { createAuditRouter } from './routes/audit.js';
+import { createIntegrationsRouter } from './routes/integrations.js';
 
 export function createApp(dbPool = pool) {
   const app = express();
@@ -41,6 +42,7 @@ export function createApp(dbPool = pool) {
   app.use('/api/clients', authenticate, createClientsRouter(dbPool));
   app.use('/api/reports', authenticate, createReportsRouter(dbPool));
   app.use('/api/audit', authenticate, createAuditRouter(dbPool));
+  app.use('/api/integrations', authenticate, createIntegrationsRouter(dbPool));
 
   return app;
 }

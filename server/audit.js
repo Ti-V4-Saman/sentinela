@@ -16,9 +16,12 @@ export const AUDIT_ACTIONS = new Set([
   'link_user_instance', 'unlink_user_instance',
   'link_team_instance', 'unlink_team_instance',
   'export',
+  'create_integration', 'update_integration', 'toggle_integration', 'regenerate_integration_secret',
+  'test_integration', 'resend_integration_batch', 'run_integration_batch', 'deliver_integration',
 ]);
 export const AUDIT_RESOURCES = new Set([
   'auth', 'chat', 'contact', 'contact_type', 'instance', 'user_instance', 'team_instance', 'report',
+  'integration', 'integration_batch',
 ]);
 
 // IP do cliente (atrás de proxy: trust proxy já resolve req.ip). Trunca defensivamente.
