@@ -28,6 +28,7 @@ import path from 'node:path';
 import migration from '../migrations/20260801120000_integrations.cjs';
 import secretMigration from '../migrations/20260801130000_integrations_secret_encrypted.cjs';
 import retryMigration from '../migrations/20260801140000_integration_retry_fields.cjs';
+import snapshotMigration from '../migrations/20260801150000_integration_batch_payload_snapshot.cjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -409,6 +410,108 @@ describe('migration integration_retry_fields — incompatibilidade em schema iso
       await knex.raw("ALTER TABLE integration_delivery_batches MODIFY COLUMN status ENUM('pending','sent') NOT NULL DEFAULT 'pending'");
 
       await expect(retryMigration.up(knex)).rejects.toThrow(/INCOMPATIBLE/i);
+    } finally {
+      await migration.down(knex);
+      await knex.destroy();
+    }
+  });
+});
+
+// ---- 20260801150000_integration_batch_payload_snapshot.cjs (S1 — snapshot imutável do payload) ----
+// Adiciona 7 colunas NULLABLE a integration_delivery_batches para persistir o corpo EXATO
+// assinado+enviado na criação do batch (payload_compressed/payload_sha256/payload_size_bytes/
+// payload_encoding/payload_created_at/target_url_snapshot/content_options_snapshot). Colunas
+// NULLABLE no DB (defensivo em banco populado); completude é imposta na aplicação (createBatch
+// sempre grava; attemptBatchDelivery recusa batch sem snapshot — ver plano). Roda via
+// applyMigrations() no beforeAll deste arquivo (knex.migrate.latest() aplica TODAS as pendentes,
+// incluindo esta).
+describe('migration integration_batch_payload_snapshot — colunas no banco compartilhado', () => {
+  it('integration_delivery_batches tem as 7 colunas de snapshot com os tipos esperados', async () => {
+    const knex = knexFactory(knexConfig.development);
+    try {
+      const expected = {
+        payload_compressed: 'longblob',
+        payload_sha256: 'char(64)',
+        payload_size_bytes: 'int unsigned',
+        payload_encoding: 'varchar(32)',
+        payload_created_at: 'datetime',
+        target_url_snapshot: 'varchar(2048)',
+        content_options_snapshot: 'json',
+      };
+      for (const [col, type] of Object.entries(expected)) {
+        const row = await snapshotMigration._helpers.columnRow(knex, 'integration_delivery_batches', col);
+        expect(row, `coluna integration_delivery_batches.${col} deveria existir`).toBeTruthy();
+        expect(row.COLUMN_TYPE.toLowerCase(), `tipo de integration_delivery_batches.${col}`).toBe(type);
+        expect(row.IS_NULLABLE.toUpperCase(), `nulidade de integration_delivery_batches.${col}`).toBe('YES');
+      }
+    } finally {
+      await knex.destroy();
+    }
+  });
+
+  it('re-rodar up() é idempotente (no-op, não lança) — seguro em paralelo com outros arquivos', async () => {
+    const knex = knexFactory(knexConfig.development);
+    try {
+      await expect(snapshotMigration.up(knex)).resolves.not.toThrow();
+      expect(await snapshotMigration._helpers.columnExists(knex, 'integration_delivery_batches', 'payload_compressed')).toBe(true);
+      expect(await snapshotMigration._helpers.columnExists(knex, 'integration_delivery_batches', 'content_options_snapshot')).toBe(true);
+    } finally {
+      await knex.destroy();
+    }
+  });
+});
+
+describe('migration integration_batch_payload_snapshot — reversibilidade (down) em schema isolado descartável', () => {
+  it('up() adiciona as 7 colunas e down() as remove, só no schema isolado', async (ctx) => {
+    if (!canCreateDatabase) {
+      ctx.skip('Usuário de teste sem privilégio CREATE DATABASE — down() coberto só por inspeção estática abaixo.');
+      return;
+    }
+    const knex = makeThrowawayKnex();
+    try {
+      await migration.up(knex); // cria as 3 tabelas
+      await snapshotMigration.up(knex);
+
+      const cols = ['payload_compressed', 'payload_sha256', 'payload_size_bytes', 'payload_encoding', 'payload_created_at', 'target_url_snapshot', 'content_options_snapshot'];
+      for (const c of cols) {
+        expect(await snapshotMigration._helpers.columnExists(knex, 'integration_delivery_batches', c), `coluna ${c} deveria existir após up()`).toBe(true);
+      }
+
+      await snapshotMigration.down(knex);
+
+      for (const c of cols) {
+        expect(await snapshotMigration._helpers.columnExists(knex, 'integration_delivery_batches', c), `coluna ${c} deveria ter sido removida por down()`).toBe(false);
+      }
+    } finally {
+      await migration.down(knex);
+      await knex.destroy();
+    }
+  });
+
+  it('documenta se o schema isolado pôde ser criado nesta execução (fallback sem CREATE DATABASE)', () => {
+    if (!canCreateDatabase) {
+      console.warn('[integrations-migration.test.js] payload_snapshot: down() validado só por inspeção estática.');
+    }
+    const fileSrc = readFileSync(path.join(__dirname, '../migrations/20260801150000_integration_batch_payload_snapshot.cjs'), 'utf8');
+    expect(fileSrc).toMatch(/payload_compressed/);
+    expect(fileSrc).toMatch(/DROP COLUMN/);
+  });
+});
+
+describe('migration integration_batch_payload_snapshot — incompatibilidade em schema isolado descartável', () => {
+  it('lança erro explícito (INCOMPATIBLE) se payload_sha256 já existir com tipo incompatível (INT)', async (ctx) => {
+    if (!canCreateDatabase) {
+      ctx.skip('Usuário de teste sem privilégio CREATE DATABASE — cenário de incompatibilidade não pode ser montado num schema isolado.');
+      return;
+    }
+    const knex = makeThrowawayKnex();
+    try {
+      await migration.up(knex); // cria as 3 tabelas
+      // simula um estado incompatível: alguma outra origem já criou a coluna payload_sha256 com
+      // um tipo que não é o CHAR(64) esperado por esta migration.
+      await knex.raw('ALTER TABLE integration_delivery_batches ADD COLUMN payload_sha256 INT NULL');
+
+      await expect(snapshotMigration.up(knex)).rejects.toThrow(/INCOMPATIBLE/i);
     } finally {
       await migration.down(knex);
       await knex.destroy();
