@@ -75,6 +75,30 @@ export async function rotateSecret(pool, tenantId, { hash, masked }) {
   return getConfig(pool, tenantId);
 }
 
+// Lista TODAS as integrações ativas (active=1) de TODOS os tenants — usada exclusivamente pelo
+// job de despacho (Task 9), que precisa varrer o sistema inteiro para achar janelas vencidas.
+// Diferente das demais funções deste módulo, NÃO filtra por um único tenantId (o próprio ponto
+// desta função é cruzar tenants); cada linha retornada já traz `tenant_id`, então o chamador
+// segue tenant-safe ao usar essa coluna em todas as chamadas subsequentes por integração.
+export async function listActiveIntegrations(pool) {
+  const [rows] = await pool.query(
+    `SELECT * FROM tenant_integrations WHERE type = ? AND active = 1`,
+    [TYPE],
+  );
+  return rows;
+}
+
+// Atualiza somente `last_run_window_end` (chamado pelo job de despacho após criar o(s) batch(es)
+// de uma janela — marca a janela como processada para que a próxima execução não a repita,
+// independentemente de a entrega ter sido tentada/bem-sucedida).
+export async function updateLastRunWindowEnd(pool, tenantId, integrationId, windowEnd) {
+  await pool.query(
+    `UPDATE tenant_integrations SET last_run_window_end = ?
+     WHERE tenant_id = ? AND id = ? AND type = ?`,
+    [windowEnd, tenantId, integrationId, TYPE],
+  );
+}
+
 // ---- integration_delivery_batches ----
 
 export async function listBatches(pool, tenantId, { page = 1, limit = 20 } = {}) {
