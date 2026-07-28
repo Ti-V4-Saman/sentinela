@@ -9,7 +9,7 @@
 // resposta): `EXTERNAL_INTEGRATIONS_DISABLED`, `SSRF_BLOCKED:<reason>`, `REDIRECT_BLOCKED`,
 // `TOO_MANY_REDIRECTS`, `TIMEOUT`, `NETWORK`, `HTTP_<code>`.
 
-import { assertSafeUrl, checkRedirectTarget, MAX_REDIRECTS } from './ssrf.js';
+import { assertSafeUrl, checkRedirectTarget } from './ssrf.js';
 import { buildHeaders } from './signature.js';
 import { externalIntegrationsEnabled, deliveryConfig } from './config.js';
 
@@ -81,7 +81,7 @@ export async function deliverBatch({
         };
       }
       redirects += 1;
-      if (redirects > (deliveryConfig().maxRedirects ?? MAX_REDIRECTS)) {
+      if (redirects > deliveryConfig().maxRedirects) {
         return {
           status: 'failure', http_code: status, duration_ms: Date.now() - startedAt,
           error: 'TOO_MANY_REDIRECTS',

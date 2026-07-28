@@ -262,6 +262,50 @@ describe('repo.createBatch — idempotência', () => {
       expect(rows[0].c).toBe(1);
     });
   });
+
+  it('mesma janela (uq_batch_window) com idempotency_key DIFERENTE retorna created:false, MESMO id, sem sobrescrever dados da 1ª chamada', async () => {
+    await withTx(async (conn) => {
+      await conn.query("INSERT INTO tenants (id, name, status) VALUES (910002, 'T-batch-window', 'active')");
+      await conn.query(`INSERT INTO tenant_integrations (id, tenant_id, type, active, target_url)
+        VALUES (910002, 910002, 'webhook_batch', 1, 'https://example.com/hook')`);
+
+      const windowTuple = {
+        tenantId: 910002, integrationId: 910002, schemaVersion: 1,
+        windowStart: '2026-07-20 00:00:00', windowEnd: '2026-07-21 00:00:00', part: 1,
+      };
+
+      const first = await createBatch(conn, {
+        ...windowTuple, partTotal: 1, idempotencyKey: 'idem-window-key-A',
+        conversationCount: 2, messageCount: 5,
+      });
+      const second = await createBatch(conn, {
+        ...windowTuple, partTotal: 9, idempotencyKey: 'idem-window-key-B',
+        conversationCount: 99, messageCount: 999,
+      });
+
+      expect(first.created).toBe(true);
+      expect(second.created).toBe(false);
+      expect(second.id).toBe(first.id);
+
+      const [rows] = await conn.query(
+        `SELECT COUNT(*) AS c FROM integration_delivery_batches
+         WHERE tenant_id = ? AND integration_id = ? AND window_start = ? AND window_end = ?
+           AND schema_version = ? AND part = ?`,
+        [windowTuple.tenantId, windowTuple.integrationId, windowTuple.windowStart,
+          windowTuple.windowEnd, windowTuple.schemaVersion, windowTuple.part],
+      );
+      expect(rows[0].c).toBe(1);
+
+      const [stored] = await conn.query(
+        'SELECT idempotency_key, part_total, message_count, conversation_count FROM integration_delivery_batches WHERE id = ?',
+        [first.id],
+      );
+      expect(stored[0].idempotency_key).toBe('idem-window-key-A');
+      expect(stored[0].part_total).toBe(1);
+      expect(stored[0].message_count).toBe(5);
+      expect(stored[0].conversation_count).toBe(2);
+    });
+  });
 });
 
 describe('repo.loadWindowData — isolamento tenant + include_groups', () => {

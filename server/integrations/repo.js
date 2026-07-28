@@ -110,23 +110,39 @@ export async function listAttempts(pool, tenantId, batchId) {
   return rows;
 }
 
-// Cria um batch IDEMPOTENTE por idempotency_key (uq_batch_idem) — e também por uq_batch_window,
-// já que ambas as UNIQUE KEYs coexistem na mesma tabela: uma segunda chamada com a mesma chave
-// NUNCA cria uma segunda linha — retorna o id da linha já existente.
+// Cria um batch IDEMPOTENTE por idempotency_key (uq_batch_idem) E por uq_batch_window
+// (tenant_id, integration_id, window_start, window_end, schema_version, part) — a tabela tem AS
+// DUAS UNIQUE KEYs, e uma segunda chamada que colida em QUALQUER uma delas NUNCA cria uma segunda
+// linha nem sobrescreve os dados da primeira — retorna o id da linha já existente.
+//
+// Por que checar as DUAS chaves antes do insert: se a checagem prévia olhasse só idempotency_key,
+// uma chamada com uma idempotencyKey NOVA mas a MESMA janela (tenant_id, integration_id,
+// window_start, window_end, schema_version, part) não seria detectada aqui — o INSERT então
+// colidiria em uq_batch_window, `LAST_INSERT_ID(id)` devolveria o id da linha ORIGINAL, e a função
+// reportaria `created: true` incorretamente enquanto o partTotal/messageCount da nova chamada
+// seriam descartados silenciosamente (a linha original nunca é tocada pelo ON DUPLICATE KEY UPDATE
+// id = LAST_INSERT_ID(id), que só reatribui o id, não as outras colunas). Checando as duas chaves
+// aqui, detectamos a colisão de janela ANTES do insert e retornamos a linha existente sem perda.
 //
 // Implementação: SELECT-then-INSERT dentro de `INSERT ... ON DUPLICATE KEY UPDATE
 // id = LAST_INSERT_ID(id)` para obter o id existente via `insertId` mesmo em conflito — mas como
 // `affectedRows` desse padrão NÃO é um indicador confiável de "foi inserido agora" nesta
 // configuração de servidor (observado: sempre 1, também quando colide), a decisão de "created"
-// vem de uma leitura prévia da linha por idempotency_key, feita ANTES do insert, na mesma
-// conexão/transação do chamador — suficiente para uso single-writer-per-key deste job.
+// vem de uma leitura prévia da linha por idempotency_key OU pela tupla de janela, feita ANTES do
+// insert, na mesma conexão/transação do chamador — suficiente para uso single-writer-per-key deste
+// job. O INSERT ... ON DUPLICATE KEY UPDATE continua como cinto-e-suspensórios para a corrida rara
+// (outra conexão insere entre o SELECT e o INSERT desta chamada).
 export async function createBatch(pool, {
   tenantId, integrationId, schemaVersion, windowStart, windowEnd, part = 1, partTotal = 1,
   idempotencyKey, conversationCount = 0, messageCount = 0,
 }) {
   const [existingRows] = await pool.query(
-    'SELECT id FROM integration_delivery_batches WHERE idempotency_key = ? LIMIT 1',
-    [idempotencyKey],
+    `SELECT id FROM integration_delivery_batches
+     WHERE idempotency_key = ?
+        OR (tenant_id = ? AND integration_id = ? AND window_start = ? AND window_end = ?
+            AND schema_version = ? AND part = ?)
+     LIMIT 1`,
+    [idempotencyKey, tenantId, integrationId, windowStart, windowEnd, schemaVersion, part],
   );
   if (existingRows[0]) {
     return { id: existingRows[0].id, created: false };
