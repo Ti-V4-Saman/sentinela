@@ -7,10 +7,17 @@
 import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
 import { getPool, applyMigrations, withTx } from './helpers/db.js';
 import { runDispatch } from '../server/jobs/dispatch-integrations.js';
+import { encryptSecret } from '../server/integrations/secret.js';
 
 const originalFlag = process.env.EXTERNAL_INTEGRATIONS_ENABLED;
 
-beforeAll(async () => { await applyMigrations(); });
+const TEST_KEY_HEX = '2'.repeat(64);
+const TEST_KEY = Buffer.from(TEST_KEY_HEX, 'hex');
+
+beforeAll(async () => {
+  process.env.INTEGRATIONS_SECRET_KEY = process.env.INTEGRATIONS_SECRET_KEY || TEST_KEY_HEX;
+  await applyMigrations();
+});
 afterAll(() => getPool().end());
 afterEach(() => {
   if (originalFlag === undefined) delete process.env.EXTERNAL_INTEGRATIONS_ENABLED;
@@ -26,17 +33,27 @@ function fakeHeaders(map = {}) {
 // [2026-03-10T03:00:00Z, 2026-03-11T03:00:00Z).
 const NOW = new Date('2026-03-11T10:00:00Z');
 
-async function seedTenantAndIntegration(conn, { tenantId, integrationId, runAtTime = '03:00', active = 1 }) {
+function currentTestKey() {
+  const raw = process.env.INTEGRATIONS_SECRET_KEY || TEST_KEY_HEX;
+  return /^[0-9a-fA-F]{64}$/.test(raw) ? Buffer.from(raw, 'hex') : Buffer.from(raw, 'base64');
+}
+
+async function seedTenantAndIntegration(conn, {
+  tenantId, integrationId, runAtTime = '03:00', active = 1, withSecret = true,
+}) {
   await conn.query(
     "INSERT INTO tenants (id, name, status) VALUES (?, ?, 'active')",
     [tenantId, `T-${tenantId}`],
   );
+  const secretEncrypted = withSecret
+    ? encryptSecret(`whsec_test-${integrationId}`, currentTestKey())
+    : null;
   await conn.query(
     `INSERT INTO tenant_integrations
-       (id, tenant_id, type, active, target_url, secret_hash, secret_masked, frequency, run_at_time, timezone,
+       (id, tenant_id, type, active, target_url, secret_encrypted, secret_masked, frequency, run_at_time, timezone,
         include_direct, include_groups, include_from_me, include_audio_transcripts)
-     VALUES (?, ?, 'webhook_batch', ?, 'https://example.com/webhook', 'fake-secret-hash', 'whsec_••••fake', 'daily', ?, 'America/Sao_Paulo', 1, 1, 1, 0)`,
-    [integrationId, tenantId, active, runAtTime],
+     VALUES (?, ?, 'webhook_batch', ?, 'https://example.com/webhook', ?, 'whsec_••••fake', 'daily', ?, 'America/Sao_Paulo', 1, 1, 1, 0)`,
+    [integrationId, tenantId, active, secretEncrypted, runAtTime],
   );
 }
 
@@ -132,6 +149,42 @@ describe('runDispatch — gate OFF', () => {
       // last_run_window_end é atualizado mesmo com gate OFF (janela foi processada/registrada).
       const [cfgRows] = await conn.query(
         'SELECT last_run_window_end FROM tenant_integrations WHERE id = ?', [930003],
+      );
+      expect(cfgRows[0].last_run_window_end).not.toBeNull();
+    });
+  });
+});
+
+describe('runDispatch — integração ativa vencida sem secret configurado', () => {
+  it('não crasha: grava attempt failure SECRET_NOT_SET, marca batch failed, janela processada, exit != 0', async () => {
+    await withTx(async (conn) => {
+      process.env.EXTERNAL_INTEGRATIONS_ENABLED = 'true';
+      await seedTenantAndIntegration(conn, { tenantId: 930008, integrationId: 930008, withSecret: false });
+
+      let called = false;
+      const fetchImpl = async () => { called = true; return { status: 200, headers: fakeHeaders() }; };
+
+      const result = await runDispatch({ pool: conn, now: NOW, fetchImpl, allowHttp: true });
+
+      expect(called).toBe(false); // nunca tenta assinar/entregar sem secret
+      expect(result.exitCode).not.toBe(0);
+
+      const [batches] = await conn.query(
+        'SELECT * FROM integration_delivery_batches WHERE tenant_id = ?', [930008],
+      );
+      expect(batches).toHaveLength(1);
+      expect(batches[0].status).toBe('failed');
+
+      const [attempts] = await conn.query(
+        'SELECT * FROM integration_delivery_attempts WHERE tenant_id = ?', [930008],
+      );
+      expect(attempts).toHaveLength(1);
+      expect(attempts[0].status).toBe('failure');
+      expect(attempts[0].error).toBe('SECRET_NOT_SET');
+
+      // Janela ainda é marcada como processada (mesmo tratamento do gate OFF).
+      const [cfgRows] = await conn.query(
+        'SELECT last_run_window_end FROM tenant_integrations WHERE id = ?', [930008],
       );
       expect(cfgRows[0].last_run_window_end).not.toBeNull();
     });

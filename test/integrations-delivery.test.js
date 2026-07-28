@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
+import { createHmac, timingSafeEqual } from 'node:crypto';
 import { getPool, applyMigrations, withTx } from './helpers/db.js';
 import { deliverBatch, runWithRetries } from '../server/integrations/delivery.js';
 import { createBatch, loadWindowData } from '../server/integrations/repo.js';
@@ -186,6 +187,47 @@ describe('deliverBatch — ligado, mock de rede', () => {
     const serialized = JSON.stringify(result);
     expect(serialized).not.toMatch(SECRET);
     expect(serialized).not.toMatch(TARGET_URL);
+  });
+});
+
+// Regressão do defeito C1 (crítico): antes desta correção, o servidor assinava deliveries com o
+// HASH persistido (sha256 do secret), não com o PLAINTEXT que o usuário copiou uma única vez da
+// UI — um receptor real, que só tem o plaintext, NUNCA conseguia validar a assinatura recebida.
+// Este teste simula exatamente esse receptor: recebe rawBody/timestamp/signature via um mock de
+// fetch (como um endpoint HTTP real receberia), recomputa HMAC-SHA256(PLAINTEXT, `${ts}.${body}`)
+// de forma independente do módulo signature.js, e confere que bate com o header enviado.
+describe('deliverBatch — assinatura é verificável pelo receptor com o PLAINTEXT (regressão C1)', () => {
+  it('receptor recomputa HMAC-SHA256(plaintext, timestamp.rawBody) e bate com X-Sentinela-Signature', async () => {
+    process.env.EXTERNAL_INTEGRATIONS_ENABLED = 'true';
+
+    let receivedHeaders = null;
+    let receivedBody = null;
+    const fetchImpl = async (_url, init) => {
+      receivedHeaders = init.headers;
+      receivedBody = init.body;
+      return { status: 200, headers: fakeHeaders() };
+    };
+
+    const rawBody = JSON.stringify({ schema_version: 1, batch: { id: 1 }, messages: [] });
+    const timestamp = '1700000000';
+    const result = await deliverBatch(baseArgs({ fetchImpl, rawBody, timestamp, secretPlaintext: SECRET }));
+
+    expect(result.status).toBe('success');
+    expect(receivedBody).toBe(rawBody); // a assinatura deve cobrir EXATAMENTE o corpo enviado
+
+    const signatureHeader = receivedHeaders['X-Sentinela-Signature'];
+    expect(signatureHeader).toMatch(/^sha256=/);
+
+    // Receptor: só tem o PLAINTEXT (o mesmo que o admin copiou da UI) — nunca o hash/cifrado.
+    const receiverExpectedHex = createHmac('sha256', SECRET)
+      .update(`${timestamp}.${rawBody}`, 'utf8')
+      .digest('hex');
+    const providedHex = signatureHeader.slice('sha256='.length);
+
+    const provided = Buffer.from(providedHex, 'hex');
+    const expected = Buffer.from(receiverExpectedHex, 'hex');
+    expect(provided.length).toBe(expected.length);
+    expect(timingSafeEqual(provided, expected)).toBe(true);
   });
 });
 

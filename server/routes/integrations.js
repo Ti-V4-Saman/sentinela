@@ -3,11 +3,11 @@ import { requireActor } from '../middleware/actor.js';
 import { writeAudit, clientIp } from '../audit.js';
 import { generateSecret } from '../integrations/secret.js';
 import { assertSafeUrl } from '../integrations/ssrf.js';
-import { externalIntegrationsEnabled, isProdLike } from '../integrations/config.js';
+import { externalIntegrationsEnabled, isProdLike, integrationsSecretKey } from '../integrations/config.js';
 import { buildPayload } from '../integrations/payload.js';
 import { deliverBatch } from '../integrations/delivery.js';
 import {
-  getConfig, publicConfig, upsertConfig, rotateSecret,
+  getConfig, publicConfig, upsertConfig, rotateSecret, getSigningSecret,
   listBatches, getBatch, listAttempts, recordAttempt, setBatchStatus, loadWindowData,
 } from '../integrations/repo.js';
 
@@ -179,8 +179,8 @@ export function createIntegrationsRouter(pool) {
     try {
       const existing = await getConfig(pool, req.tenantId);
       if (!existing) return res.status(404).json({ error: 'Integração não configurada' });
-      const { plaintext, hash, masked } = generateSecret();
-      await rotateSecret(pool, req.tenantId, { hash, masked });
+      const { plaintext, encrypted, masked } = generateSecret(integrationsSecretKey());
+      await rotateSecret(pool, req.tenantId, { encrypted, masked });
       writeAudit(pool, {
         tenantId: req.tenantId, actor: req.actor, action: 'regenerate_integration_secret',
         resource: 'integration', resourceId: existing.id, ip: clientIp(req),
@@ -207,7 +207,8 @@ export function createIntegrationsRouter(pool) {
       }
       const config = await getConfig(pool, req.tenantId);
       if (!config) return res.status(400).json({ error: 'integração não configurada' });
-      if (!config.secret_hash) return res.status(400).json({ error: 'secret não configurado' });
+      const secretPlaintext = await getSigningSecret(pool, req.tenantId, integrationsSecretKey());
+      if (!secretPlaintext) return res.status(400).json({ error: 'secret não configurado' });
 
       const urlCheck = await assertSafeUrl(config.target_url, { allowHttp: !isProdLike() });
       if (!urlCheck.ok) {
@@ -229,13 +230,13 @@ export function createIntegrationsRouter(pool) {
       const timestamp = String(Math.floor(now.getTime() / 1000));
       const deliveryId = `test-${req.tenantId}-${timestamp}`;
 
-      // O secret plaintext só existe no instante de POST /secret (só o hash é persistido). O
-      // teste de conectividade assina com o hash como placeholder — o objetivo aqui é validar
-      // URL/SSRF/rede, não a verificação de assinatura fim-a-fim (essa cabe ao receptor real,
-      // comparando contra o secret que ELE recebeu do usuário).
+      // O secret é decifrado em memória (nunca logado) e usado para assinar de verdade — o
+      // receptor pode recomputar HMAC-SHA256(secret, `${timestamp}.${rawBody}`) com o MESMO
+      // plaintext que copiou da UI e validar a assinatura de ponta a ponta (não é mais um teste
+      // só de conectividade/SSRF: a assinatura enviada aqui é verificável).
       const result = await deliverBatch({
         integration: config,
-        secretPlaintext: config.secret_hash,
+        secretPlaintext,
         batchRow: { schema_version: 1 },
         rawBody,
         timestamp,
@@ -309,7 +310,8 @@ export function createIntegrationsRouter(pool) {
       }
       const config = await getConfig(pool, req.tenantId);
       if (!config) return res.status(400).json({ error: 'integração não configurada' });
-      if (!config.secret_hash) return res.status(400).json({ error: 'secret não configurado' });
+      const secretPlaintext = await getSigningSecret(pool, req.tenantId, integrationsSecretKey());
+      if (!secretPlaintext) return res.status(400).json({ error: 'secret não configurado' });
 
       await setBatchStatus(pool, req.tenantId, req.batch.id, 'delivering');
 
@@ -329,7 +331,7 @@ export function createIntegrationsRouter(pool) {
 
       const result = await deliverBatch({
         integration: config,
-        secretPlaintext: config.secret_hash,
+        secretPlaintext,
         batchRow: req.batch,
         rawBody,
         timestamp,

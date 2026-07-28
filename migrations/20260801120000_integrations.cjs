@@ -56,7 +56,14 @@ const TI_COLUMNS = [
   { name: 'type', type: "enum('webhook_batch')", nullable: false },
   { name: 'active', type: 'tinyint(1)', nullable: false },
   { name: 'target_url', type: 'varchar(2048)', nullable: false },
-  { name: 'secret_hash', type: 'varchar(255)', nullable: true },
+  // secret_hash: verificada via `anyOf` (não `name`) — a migration seguinte
+  // (20260801130000_integrations_secret_encrypted.cjs, defeito C1) RENOMEIA esta coluna para
+  // secret_encrypted (mesmo tipo/nulidade) assim que aplicada. Como esta migration já estava
+  // aplicada no banco de teste compartilhado quando o rename foi introduzido, ela não pôde ser
+  // editada para "esquecer" a coluna original — em vez disso, passou a aceitar QUALQUER UMA das
+  // duas, para que re-rodar up() (idempotência) continue funcionando nos dois estados válidos:
+  // logo após esta migration (secret_hash) ou após a seguinte já ter rodado (secret_encrypted).
+  { anyOf: ['secret_hash', 'secret_encrypted'], type: 'varchar(255)', nullable: true },
   { name: 'secret_masked', type: 'varchar(64)', nullable: true },
   { name: 'secret_set_at', type: 'timestamp', nullable: true },
   { name: 'frequency', type: "enum('daily')", nullable: false },
@@ -157,6 +164,20 @@ const fkExists = async (knex, table, name) => (await fkRows(knex, table, name)).
 // que faltar; lança erro explícito "... INCOMPATIBLE" em divergência de definição. ----
 async function reconcileExistingTable(knex, table, columns, indexes, fks) {
   for (const col of columns) {
+    // Colunas `anyOf` (ex.: secret_hash/secret_encrypted — ver comentário em TI_COLUMNS) são
+    // válidas se QUALQUER UMA das alternativas existir com a definição esperada; útil para uma
+    // coluna que uma migration POSTERIOR renomeia de forma rastreada (não uma divergência real).
+    if (col.anyOf) {
+      const rows = await Promise.all(col.anyOf.map((name) => columnRow(knex, table, name)));
+      const presentIdx = rows.findIndex((r) => !!r);
+      if (presentIdx === -1) {
+        throw new Error(`Nenhuma de [${col.anyOf.join(', ')}] existe em ${table} — INCOMPATIBLE com o schema esperado desta migration.`);
+      }
+      if (!validateColumn(rows[presentIdx], col).ok) {
+        throw new Error(`Coluna ${table}.${col.anyOf[presentIdx]} existe com definição INCOMPATIBLE (esperado ${col.type}, nullable=${col.nullable}).`);
+      }
+      continue;
+    }
     const row = await columnRow(knex, table, col.name);
     if (row) {
       if (!validateColumn(row, col).ok) {

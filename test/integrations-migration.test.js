@@ -23,6 +23,7 @@ import knexFactory from 'knex';
 import knexConfig from '../knexfile.cjs';
 import { getPool, applyMigrations } from './helpers/db.js';
 import migration from '../migrations/20260801120000_integrations.cjs';
+import secretMigration from '../migrations/20260801130000_integrations_secret_encrypted.cjs';
 
 const THROWAWAY_DB = 'sentinela_migtest_b1';
 
@@ -75,7 +76,10 @@ describe('migration integrations — estado do schema compartilhado (aditivo, se
     const knex = knexFactory(knexConfig.development);
     try {
       expect(await migration._helpers.tableExists(knex, 'tenant_integrations')).toBe(true);
-      const cols = ['tenant_id', 'type', 'active', 'target_url', 'secret_hash', 'secret_masked', 'frequency', 'run_at_time', 'timezone', 'include_direct', 'include_groups', 'include_from_me', 'include_audio_transcripts', 'last_run_window_end', 'updated_by'];
+      // secret_encrypted (não secret_hash): a coluna foi renomeada/retipada pela migration
+      // 20260801130000_integrations_secret_encrypted.cjs (defeito C1 — ver describe dedicado
+      // abaixo), que já rodou por applyMigrations() (knex.migrate.latest()) neste beforeAll.
+      const cols = ['tenant_id', 'type', 'active', 'target_url', 'secret_encrypted', 'secret_masked', 'frequency', 'run_at_time', 'timezone', 'include_direct', 'include_groups', 'include_from_me', 'include_audio_transcripts', 'last_run_window_end', 'updated_by'];
       for (const c of cols) {
         expect(await migration._helpers.columnExists(knex, 'tenant_integrations', c), `coluna tenant_integrations.${c} deveria existir`).toBe(true);
       }
@@ -203,5 +207,67 @@ describe('migration integrations — inspeção estática do down() (fallback se
     // tabela do topo do arquivo — confirma tanto os 3 DROP TABLE IF EXISTS quanto a ordem.
     const drops = [...src.matchAll(/DROP TABLE IF EXISTS \$\{(\w+)\}/g)].map((m) => m[1]);
     expect(drops).toEqual(['ATTEMPTS', 'BATCHES', 'TI']);
+  });
+});
+
+// ---- 20260801130000_integrations_secret_encrypted.cjs (defeito C1 — secret cifrado em repouso) ----
+// A migration original (20260801120000) já estava aplicada no banco de teste compartilhado quando
+// o defeito foi corrigido, então não pôde ser editada in-place — esta segunda migration renomeia
+// `secret_hash` -> `secret_encrypted` (CHANGE COLUMN, mesmo VARCHAR(255) NULL). Roda via
+// applyMigrations() no beforeAll deste arquivo (knex.migrate.latest() aplica TODAS as pendentes).
+describe('migration integrations_secret_encrypted — coluna renomeada no banco compartilhado', () => {
+  it('tenant_integrations tem secret_encrypted e NÃO tem mais secret_hash', async () => {
+    const knex = knexFactory(knexConfig.development);
+    try {
+      expect(await secretMigration._helpers.columnExists(knex, 'tenant_integrations', 'secret_encrypted')).toBe(true);
+      expect(await secretMigration._helpers.columnExists(knex, 'tenant_integrations', 'secret_hash')).toBe(false);
+    } finally {
+      await knex.destroy();
+    }
+  });
+
+  it('re-rodar up() é idempotente (no-op, não lança) — seguro em paralelo com outros arquivos', async () => {
+    const knex = knexFactory(knexConfig.development);
+    try {
+      await expect(secretMigration.up(knex)).resolves.not.toThrow();
+      expect(await secretMigration._helpers.columnExists(knex, 'tenant_integrations', 'secret_encrypted')).toBe(true);
+    } finally {
+      await knex.destroy();
+    }
+  });
+});
+
+describe('migration integrations_secret_encrypted — reversibilidade (down) em schema isolado descartável', () => {
+  it('up() renomeia secret_hash->secret_encrypted e down() reverte, só no schema isolado', async (ctx) => {
+    if (!canCreateDatabase) {
+      ctx.skip('Usuário de teste sem privilégio CREATE DATABASE — down() coberto só por inspeção estática abaixo.');
+      return;
+    }
+    const knex = makeThrowawayKnex();
+    try {
+      await migration.up(knex); // cria as 3 tabelas com secret_hash (schema original)
+      expect(await secretMigration._helpers.columnExists(knex, 'tenant_integrations', 'secret_hash')).toBe(true);
+
+      await secretMigration.up(knex);
+      expect(await secretMigration._helpers.columnExists(knex, 'tenant_integrations', 'secret_encrypted')).toBe(true);
+      expect(await secretMigration._helpers.columnExists(knex, 'tenant_integrations', 'secret_hash')).toBe(false);
+
+      await secretMigration.down(knex);
+      expect(await secretMigration._helpers.columnExists(knex, 'tenant_integrations', 'secret_hash')).toBe(true);
+      expect(await secretMigration._helpers.columnExists(knex, 'tenant_integrations', 'secret_encrypted')).toBe(false);
+    } finally {
+      await migration.down(knex);
+      await knex.destroy();
+    }
+  });
+
+  it('documenta se o schema isolado pôde ser criado nesta execução (fallback sem CREATE DATABASE)', () => {
+    if (!canCreateDatabase) {
+      console.warn('[integrations-migration.test.js] secret_encrypted: down() validado só por inspeção estática.');
+    }
+    const upSrc = secretMigration.up.toString();
+    const downSrc = secretMigration.down.toString();
+    expect(upSrc).toMatch(/CHANGE COLUMN \$\{OLD_COL\} \$\{NEW_COL\}/);
+    expect(downSrc).toMatch(/CHANGE COLUMN \$\{NEW_COL\} \$\{OLD_COL\}/);
   });
 });

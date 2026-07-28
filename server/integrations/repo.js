@@ -9,6 +9,8 @@
 // tenant_id = ?` nela é o ponto ÚNICO de isolamento cross-tenant que `buildPayload` (Task 6)
 // confia: o builder não revalida tenant, então um bug aqui vazaria dados de outro tenant.
 
+import { decryptSecret } from './secret.js';
+
 const TYPE = 'webhook_batch';
 
 // ---- tenant_integrations ----
@@ -21,12 +23,12 @@ export async function getConfig(pool, tenantId) {
   return rows[0] || null;
 }
 
-// Remove secret_hash de uma linha de config antes de expor a chamadores que montam resposta de
-// API — só secret_masked/secret_set_at (nunca o hash, nunca o plaintext).
+// Remove secret_encrypted de uma linha de config antes de expor a chamadores que montam resposta
+// de API — só secret_masked/secret_set_at (nunca o cifrado, nunca o plaintext).
 export function publicConfig(row) {
   if (!row) return null;
-  const { secret_hash, ...rest } = row;
-  void secret_hash;
+  const { secret_encrypted, ...rest } = row;
+  void secret_encrypted;
   return rest;
 }
 
@@ -36,7 +38,7 @@ const UPSERT_PATCH_COLUMNS = [
 ];
 
 // Insere ou atualiza a única linha (tenant_id, type='webhook_batch'). NÃO toca nas colunas de
-// secret (secret_hash/secret_masked/secret_set_at) — isso é responsabilidade de `rotateSecret`.
+// secret (secret_encrypted/secret_masked/secret_set_at) — isso é responsabilidade de `rotateSecret`.
 export async function upsertConfig(pool, tenantId, patch, actorId) {
   const cols = ['tenant_id', 'type'];
   const placeholders = ['?', '?'];
@@ -63,16 +65,26 @@ export async function upsertConfig(pool, tenantId, patch, actorId) {
   return getConfig(pool, tenantId);
 }
 
-// Grava o resultado de uma (re)geração de secret: hash + máscara + timestamp. Nunca recebe/grava
-// o plaintext.
-export async function rotateSecret(pool, tenantId, { hash, masked }) {
+// Grava o resultado de uma (re)geração de secret: cifrado (reversível) + máscara + timestamp.
+// Nunca recebe/grava o plaintext.
+export async function rotateSecret(pool, tenantId, { encrypted, masked }) {
   await pool.query(
     `UPDATE tenant_integrations
-       SET secret_hash = ?, secret_masked = ?, secret_set_at = NOW()
+       SET secret_encrypted = ?, secret_masked = ?, secret_set_at = NOW()
      WHERE tenant_id = ? AND type = ?`,
-    [hash, masked, tenantId, TYPE],
+    [encrypted, masked, tenantId, TYPE],
   );
   return getConfig(pool, tenantId);
+}
+
+// Carrega o secret PLAINTEXT do tenant (decifrado em memória) para assinar uma entrega real —
+// única função deste módulo que devolve o plaintext. Nunca loga/persiste o retorno; chamadores
+// devem usá-lo só para assinar (signature.js) e descartar. Retorna null se a integração não
+// existir ou não tiver secret configurado ainda.
+export async function getSigningSecret(pool, tenantId, key) {
+  const config = await getConfig(pool, tenantId);
+  if (!config || !config.secret_encrypted) return null;
+  return decryptSecret(config.secret_encrypted, key);
 }
 
 // Lista TODAS as integrações ativas (active=1) de TODOS os tenants — usada exclusivamente pelo

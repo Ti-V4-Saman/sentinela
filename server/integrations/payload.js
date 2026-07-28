@@ -8,7 +8,7 @@
 // Allow-list estrita: o objeto de saída é construído campo a campo (nunca por spread/cópia da
 // linha fonte), então qualquer coluna nova adicionada no futuro à query de origem (ex.: notas
 // internas, tokens, ids de outro tenant) NUNCA vaza automaticamente — precisa ser adicionada aqui
-// explicitamente. Deny-list (nunca emitir): capture_wid, secret, secret_hash, token, password,
+// explicitamente. Deny-list (nunca emitir): capture_wid, secret, secret_encrypted, token, password,
 // password_hash, notas internas, dados de auditoria, payloads de auth, ids internos além dos
 // listados, campos de outro tenant.
 

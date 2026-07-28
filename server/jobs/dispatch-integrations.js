@@ -35,10 +35,10 @@
 import { computeDueWindow, idempotencyKey } from '../integrations/window.js';
 import { buildPayload, chunkPayload } from '../integrations/payload.js';
 import { runWithRetries } from '../integrations/delivery.js';
-import { isProdLike } from '../integrations/config.js';
+import { isProdLike, integrationsSecretKey } from '../integrations/config.js';
 import {
   listActiveIntegrations, loadWindowData, createBatch, recordAttempt, setBatchStatus,
-  updateLastRunWindowEnd,
+  updateLastRunWindowEnd, getSigningSecret,
 } from '../integrations/repo.js';
 import { writeAudit } from '../audit.js';
 
@@ -79,11 +79,17 @@ function sanitizedLog(event, fields = {}) {
 // Processa UMA integração: computa a janela, lê dados, monta+chunka o payload, cria batch(es)
 // idempotentes e tenta entregar (se o gate estiver ligado). Nunca lança — qualquer erro inesperado
 // é responsabilidade do chamador (que envolve esta função inteira em try/catch por integração).
-async function processIntegration({ pool, cfg, now, fetchImpl, allowHttp, maxAttempts }) {
+async function processIntegration({ pool, cfg, now, fetchImpl, allowHttp, maxAttempts, secretKey }) {
   const window = computeDueWindow(cfg, now);
   if (!window) {
     return { processed: false, hadFailure: false };
   }
+
+  // Decifra o secret UMA vez por integração (mesmo valor para todas as partes desta janela).
+  // Se não houver secret configurado, a janela ainda é registrada como processada (mesmo
+  // comportamento de quando o gate global está desligado) — só que a causa vai para o attempt
+  // como `SECRET_NOT_SET` em vez de tentar assinar com um valor ausente.
+  const secretPlaintext = await getSigningSecret(pool, cfg.tenant_id, secretKey);
 
   const { conversations, messages } = await loadWindowData(pool, cfg.tenant_id, cfg, window);
   const fullPayload = buildPayload({
@@ -128,6 +134,30 @@ async function processIntegration({ pool, cfg, now, fetchImpl, allowHttp, maxAtt
       continue;
     }
 
+    // Sem secret configurado: nunca tenta assinar/entregar com um valor ausente. Registra uma
+    // falha sanitizada (SECRET_NOT_SET) e segue para a próxima parte/integração — não crasha o
+    // job (mesmo tratamento de "não é uma exceção", só um estado operacional a corrigir).
+    if (!secretPlaintext) {
+      // eslint-disable-next-line no-await-in-loop
+      await recordAttempt(pool, {
+        tenantId: cfg.tenant_id, batchId, attemptNo: 1, status: 'failure',
+        httpCode: null, durationMs: null, error: 'SECRET_NOT_SET',
+      });
+      // eslint-disable-next-line no-await-in-loop
+      await writeAudit(pool, {
+        tenantId: cfg.tenant_id, action: 'deliver_integration', resource: 'integration_batch',
+        resourceId: batchId, status: 'fail', metadata: { httpCode: null },
+      });
+      // eslint-disable-next-line no-await-in-loop
+      await setBatchStatus(pool, cfg.tenant_id, batchId, 'failed');
+      hadFailure = true;
+      sanitizedLog('delivery_attempt', {
+        tenantId: cfg.tenant_id, integrationId: cfg.id, batchId, status: 'failure',
+        httpCode: '-', error: 'SECRET_NOT_SET',
+      });
+      continue;
+    }
+
     // Gate desligado: `runWithRetries`/`deliverBatch` já tratam isso — NÃO chamam fetchImpl e
     // gravam failure `EXTERNAL_INTEGRATIONS_DISABLED` (nunca um sucesso falso). Reaproveitamos o
     // mesmo caminho abaixo em vez de duplicar a decisão aqui.
@@ -138,7 +168,7 @@ async function processIntegration({ pool, cfg, now, fetchImpl, allowHttp, maxAtt
     // eslint-disable-next-line no-await-in-loop
     const result = await runWithRetries({
       integration: cfg,
-      secretPlaintext: cfg.secret_hash,
+      secretPlaintext,
       batchRow: { schema_version: SCHEMA_VERSION },
       rawBody,
       timestamp,
@@ -191,7 +221,7 @@ async function processIntegration({ pool, cfg, now, fetchImpl, allowHttp, maxAtt
 // de lock — nos testes de concorrência precisa ser o pool real (compartilhado com quem já
 // segura o lock em outra conexão); por padrão é o mesmo `pool`.
 export async function runDispatch({
-  pool, now, fetchImpl, allowHttp = false, lockPool = pool, maxAttempts,
+  pool, now, fetchImpl, allowHttp = false, lockPool = pool, maxAttempts, secretKey,
 }) {
   const lock = await acquireLock(lockPool);
   if (!lock.got) {
@@ -207,8 +237,14 @@ export async function runDispatch({
 
     for (const cfg of integrations) {
       try {
+        // `integrationsSecretKey()` é lida por integração (dentro do try) — se ausente/inválida,
+        // essa integração é isolada como erro (mesmo tratamento de config quebrada), sem
+        // derrubar as demais nem exigir a env var em cenários sem integrações ativas.
+        const key = secretKey ?? integrationsSecretKey();
         // eslint-disable-next-line no-await-in-loop
-        const result = await processIntegration({ pool, cfg, now, fetchImpl, allowHttp, maxAttempts });
+        const result = await processIntegration({
+          pool, cfg, now, fetchImpl, allowHttp, maxAttempts, secretKey: key,
+        });
         if (result.processed) {
           processed += 1;
           if (result.hadFailure) failures += 1;

@@ -2,7 +2,7 @@
 //
 // Cobre a matriz RBAC/segurança: superadmin exige ?tenant_id= (sem visão global); admin sempre no
 // próprio tenant (tenant_id de query/body é IGNORADO); gestor/usuario → 403; cross-tenant em
-// /batches/:id/attempts → 404; GET/PUT nunca retornam secret_hash/plaintext; POST /secret retorna
+// /batches/:id/attempts → 404; GET/PUT nunca retornam secret_encrypted/plaintext; POST /secret retorna
 // o plaintext uma única vez; PUT com URL SSRF/inválida → 400; com a flag desligada, /test e
 // /resend não fingem sucesso; paginação de /batches; auditoria com metadados seguros.
 
@@ -57,7 +57,11 @@ function validBody(overrides = {}) {
 
 const originalFlag = process.env.EXTERNAL_INTEGRATIONS_ENABLED;
 
-beforeAll(async () => { process.env.JWT_SECRET = process.env.JWT_SECRET || 'test-secret'; await applyMigrations(); });
+beforeAll(async () => {
+  process.env.JWT_SECRET = process.env.JWT_SECRET || 'test-secret';
+  process.env.INTEGRATIONS_SECRET_KEY = process.env.INTEGRATIONS_SECRET_KEY || '3'.repeat(64);
+  await applyMigrations();
+});
 afterAll(() => getPool().end());
 afterEach(() => {
   if (originalFlag === undefined) delete process.env.EXTERNAL_INTEGRATIONS_ENABLED;
@@ -125,18 +129,18 @@ describe('integrations routes — RBAC e resolução de tenant', () => {
 });
 
 describe('integrations routes — PUT / (criar/atualizar config)', () => {
-  it('cria e depois atualiza a config; nunca retorna secret_hash/plaintext', async () => {
+  it('cria e depois atualiza a config; nunca retorna secret_encrypted/plaintext', async () => {
     await withTx(async (c) => {
       await seed(c); const app = makeApp(c);
       const created = await request(app).put('/api/integrations').set('Authorization', bearer(ADMIN1)).send(validBody());
       expect(created.status).toBe(200);
-      expect(created.body).not.toHaveProperty('secret_hash');
+      expect(created.body).not.toHaveProperty('secret_encrypted');
       expect(JSON.stringify(created.body)).not.toMatch(/whsec_/);
 
       const updated = await request(app).put('/api/integrations').set('Authorization', bearer(ADMIN1)).send(validBody({ active: false }));
       expect(updated.status).toBe(200);
       expect(updated.body.active).toBe(0);
-      expect(updated.body).not.toHaveProperty('secret_hash');
+      expect(updated.body).not.toHaveProperty('secret_encrypted');
     });
   });
 
@@ -202,7 +206,7 @@ describe('integrations routes — POST /secret', () => {
 
       const getRes = await request(app).get('/api/integrations').set('Authorization', bearer(ADMIN1));
       expect(getRes.body.config.secret_masked).toBe(secretRes.body.masked);
-      expect(getRes.body.config).not.toHaveProperty('secret_hash');
+      expect(getRes.body.config).not.toHaveProperty('secret_encrypted');
       expect(JSON.stringify(getRes.body)).not.toContain(secretRes.body.secret);
     });
   });
