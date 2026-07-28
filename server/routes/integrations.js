@@ -6,9 +6,11 @@ import { assertSafeUrl } from '../integrations/ssrf.js';
 import { externalIntegrationsEnabled, isProdLike, integrationsSecretKey } from '../integrations/config.js';
 import { buildPayload } from '../integrations/payload.js';
 import { deliverBatch } from '../integrations/delivery.js';
+import { attemptBatchDelivery } from '../integrations/deliver-batch-attempt.js';
 import {
   getConfig, publicConfig, upsertConfig, rotateSecret, getSigningSecret,
-  listBatches, getBatch, listAttempts, recordAttempt, setBatchStatus, loadWindowData,
+  listBatches, getBatch, listAttempts,
+  claimBatchForAttempt, releaseClaim,
 } from '../integrations/repo.js';
 
 // Rotas tenant-safe de Configurações > Integrações (Etapa B — integração por webhook em lote).
@@ -297,6 +299,19 @@ export function createIntegrationsRouter(pool) {
   });
 
   // ---- POST /batches/:id/resend ----
+  //
+  // Segurança/concorrência (R4 — ver docs/superpowers/plans/2026-07-28-etapaB-hardening.md):
+  // 1. `router.param('id', ...)` acima JÁ revalidou que o batch pertence a `req.tenantId`
+  //    (getBatch tenant-scoped, 404 se não achar) — nunca reivindicamos um batch sem confirmar
+  //    posse antes.
+  // 2. Gate desligado → 409, nenhuma tentativa de entrega (mesma politica do job: gate OFF nunca
+  //    finge sucesso nem consome tentativa).
+  // 3. A guarda de concorrência é a MESMA usada pelo job (`claimBatchForAttempt`, UPDATE
+  //    condicional) — um reenvio manual concorrente com o ciclo automático do job (ou com outro
+  //    reenvio) nunca reivindica o mesmo batch duas vezes; `claimed:false` vira 409.
+  // 4. A entrega em si usa o MESMO helper (`attemptBatchDelivery`) que o job usa na Fase 2 — evita
+  //    duas implementações divergentes de "reconstruir payload + entregar + classificar
+  //    retryable/non-retryable + gravar attempt/transição de estado".
   router.post('/batches/:id/resend', async (req, res) => {
     try {
       if (!checkRateLimit(req.tenantId, 'resend')) {
@@ -305,63 +320,38 @@ export function createIntegrationsRouter(pool) {
       if (!externalIntegrationsEnabled()) {
         return res.status(409).json({ error: 'integração externa desativada no ambiente' });
       }
-      if (req.batch.status === 'delivering') {
+
+      const now = new Date();
+      const claim = await claimBatchForAttempt(pool, req.batch.id, { now, includeBlocked: true });
+      if (!claim.claimed) {
         return res.status(409).json({ error: 'Lote já está em entrega' });
       }
+
       const config = await getConfig(pool, req.tenantId);
-      if (!config) return res.status(400).json({ error: 'integração não configurada' });
-      const secretPlaintext = await getSigningSecret(pool, req.tenantId, integrationsSecretKey());
-      if (!secretPlaintext) return res.status(400).json({ error: 'secret não configurado' });
+      if (!config) {
+        await releaseClaim(pool, req.batch.id, { toStatus: req.batch.status });
+        return res.status(400).json({ error: 'integração não configurada' });
+      }
 
-      await setBatchStatus(pool, req.tenantId, req.batch.id, 'delivering');
-
-      const window = { start: req.batch.window_start, end: req.batch.window_end };
-      const { conversations, messages } = await loadWindowData(pool, req.tenantId, config, window);
-      const payload = buildPayload({
-        tenant: { id: req.tenantId },
+      const result = await attemptBatchDelivery(pool, {
+        tenantId: req.tenantId,
         integration: config,
-        window,
-        conversations,
-        messages,
-        schemaVersion: req.batch.schema_version,
-      });
-      const rawBody = JSON.stringify(payload);
-      const timestamp = String(Math.floor(Date.now() / 1000));
-      const deliveryId = `resend-${req.batch.id}-${timestamp}`;
-
-      const result = await deliverBatch({
-        integration: config,
-        secretPlaintext,
-        batchRow: req.batch,
-        rawBody,
-        timestamp,
-        deliveryId,
-        idempotencyKey: req.batch.idempotency_key,
+        batch: req.batch,
+        now,
+        secretKey: integrationsSecretKey(),
         allowHttp: !isProdLike(),
+        deliveryIdPrefix: 'resend',
+        auditAction: 'resend_integration_batch',
       });
 
-      const priorAttempts = await listAttempts(pool, req.tenantId, req.batch.id);
-      const attemptNo = priorAttempts.length + 1;
-      await recordAttempt(pool, {
-        tenantId: req.tenantId, batchId: req.batch.id, attemptNo,
-        status: result.status, httpCode: result.http_code, durationMs: result.duration_ms,
-        error: result.error || null,
+      res.json({
+        status: result.attemptStatus === 'delivered' ? 'success' : 'failure',
+        http_code: result.httpCode,
+        batchStatus: result.attemptStatus,
       });
-
-      const finalStatus = result.status === 'success' ? 'delivered' : 'failed';
-      await setBatchStatus(pool, req.tenantId, req.batch.id, finalStatus);
-
-      writeAudit(pool, {
-        tenantId: req.tenantId, actor: req.actor, action: 'resend_integration_batch',
-        resource: 'integration_batch', resourceId: req.batch.id, ip: clientIp(req),
-        status: result.status === 'success' ? 'ok' : 'fail',
-        metadata: { httpCode: result.http_code },
-      });
-
-      res.json({ status: result.status, http_code: result.http_code, batchStatus: finalStatus });
     } catch (e) {
       console.error('resend integration batch:', e);
-      try { await setBatchStatus(pool, req.tenantId, req.batch.id, 'failed'); } catch { /* noop */ }
+      try { await releaseClaim(pool, req.batch.id, { toStatus: 'failed' }); } catch { /* noop */ }
       res.status(500).json({ error: 'Falha ao reenviar o lote' });
     }
   });

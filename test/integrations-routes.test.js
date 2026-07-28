@@ -327,4 +327,104 @@ describe('integrations routes — POST /batches/:id/resend (gate global, anti-co
       expect(r.status).toBe(409);
     });
   });
+
+  it('lote de outro tenant → 404 (router.param já revalida posse antes de qualquer claim — R3 Important #1)', async () => {
+    await withTx(async (c) => {
+      process.env.EXTERNAL_INTEGRATIONS_ENABLED = 'true';
+      await seed(c); const app = makeApp(c);
+      const put2 = await request(app).put('/api/integrations').set('Authorization', bearer(ADMIN2)).send(validBody());
+      const integrationId2 = put2.body.id;
+      const [ins] = await c.query(`INSERT INTO integration_delivery_batches
+        (tenant_id, integration_id, schema_version, window_start, window_end, part, part_total, idempotency_key, status, conversation_count, message_count)
+        VALUES (910002, ?, 1, '2026-07-20 00:00:00', '2026-07-21 00:00:00', 1, 1, 'k-resend-crosstenant', 'pending', 0, 0)`,
+        [integrationId2]);
+      const batchId = ins.insertId;
+
+      // ADMIN1 (tenant 910001) tentando reenviar um lote do tenant 910002.
+      const r = await request(app).post(`/api/integrations/batches/${batchId}/resend`).set('Authorization', bearer(ADMIN1));
+      expect(r.status).toBe(404);
+
+      // O batch do outro tenant nunca foi tocado (nem reivindicado).
+      const [rows] = await c.query('SELECT status FROM integration_delivery_batches WHERE id = ?', [batchId]);
+      expect(rows[0].status).toBe('pending');
+    });
+  });
+
+  it('lote pending elegível, sem secret configurado → tentativa registrada (SECRET_NOT_SET), batch pending_retry, resposta failure', async () => {
+    await withTx(async (c) => {
+      process.env.EXTERNAL_INTEGRATIONS_ENABLED = 'true';
+      await seed(c); const app = makeApp(c);
+      const put = await request(app).put('/api/integrations').set('Authorization', bearer(ADMIN1)).send(validBody());
+      const integrationId = put.body.id;
+      // Config sem secret_encrypted (rotateSecret nunca chamado) — getSigningSecret retorna null.
+      const [ins] = await c.query(`INSERT INTO integration_delivery_batches
+        (tenant_id, integration_id, schema_version, window_start, window_end, part, part_total, idempotency_key, status, conversation_count, message_count)
+        VALUES (910001, ?, 1, '2026-07-20 00:00:00', '2026-07-21 00:00:00', 1, 1, 'k-resend-nosecret', 'pending', 0, 0)`,
+        [integrationId]);
+      const batchId = ins.insertId;
+
+      const r = await request(app).post(`/api/integrations/batches/${batchId}/resend`).set('Authorization', bearer(ADMIN1));
+      expect(r.status).toBe(200);
+      expect(r.body.status).toBe('failure');
+      expect(r.body.batchStatus).toBe('pending_retry'); // SECRET_NOT_SET é retryable
+
+      const [rows] = await c.query('SELECT status, attempt_count FROM integration_delivery_batches WHERE id = ?', [batchId]);
+      expect(rows[0].status).toBe('pending_retry');
+      expect(rows[0].attempt_count).toBe(1);
+
+      const [attempts] = await c.query('SELECT * FROM integration_delivery_attempts WHERE batch_id = ?', [batchId]);
+      expect(attempts).toHaveLength(1);
+      expect(attempts[0].error).toBe('SECRET_NOT_SET');
+    });
+  });
+
+  it('reenvio manual não colide com retry automático concorrente — segunda claim no mesmo lote é 409/no-op', async () => {
+    await withTx(async (c) => {
+      process.env.EXTERNAL_INTEGRATIONS_ENABLED = 'true';
+      await seed(c); const app = makeApp(c);
+      const put = await request(app).put('/api/integrations').set('Authorization', bearer(ADMIN1)).send(validBody());
+      const integrationId = put.body.id;
+      const [ins] = await c.query(`INSERT INTO integration_delivery_batches
+        (tenant_id, integration_id, schema_version, window_start, window_end, part, part_total, idempotency_key, status, conversation_count, message_count)
+        VALUES (910001, ?, 1, '2026-07-20 00:00:00', '2026-07-21 00:00:00', 1, 1, 'k-resend-nocollide', 'pending', 0, 0)`,
+        [integrationId]);
+      const batchId = ins.insertId;
+
+      // Simula o "retry automático" já tendo reivindicado o batch nesta mesma transação (mesma
+      // guarda usada pelo job — claimBatchForAttempt) ANTES do reenvio manual chegar.
+      const { claimBatchForAttempt } = await import('../server/integrations/repo.js');
+      const preClaim = await claimBatchForAttempt(c, batchId, { now: new Date(), includeBlocked: true });
+      expect(preClaim.claimed).toBe(true);
+
+      // Reenvio manual concorrente encontra o batch já 'delivering' → 409, nunca reivindica de novo.
+      const r = await request(app).post(`/api/integrations/batches/${batchId}/resend`).set('Authorization', bearer(ADMIN1));
+      expect(r.status).toBe(409);
+
+      const [rows] = await c.query('SELECT status FROM integration_delivery_batches WHERE id = ?', [batchId]);
+      expect(rows[0].status).toBe('delivering'); // continua sob posse de quem reivindicou primeiro
+    });
+  });
+
+  it('lote "blocked" (gate estava off na criação) é elegível para reenvio manual com o gate ligado', async () => {
+    await withTx(async (c) => {
+      process.env.EXTERNAL_INTEGRATIONS_ENABLED = 'true';
+      await seed(c); const app = makeApp(c);
+      const put = await request(app).put('/api/integrations').set('Authorization', bearer(ADMIN1)).send(validBody());
+      const integrationId = put.body.id;
+      const [ins] = await c.query(`INSERT INTO integration_delivery_batches
+        (tenant_id, integration_id, schema_version, window_start, window_end, part, part_total, idempotency_key, status, conversation_count, message_count)
+        VALUES (910001, ?, 1, '2026-07-20 00:00:00', '2026-07-21 00:00:00', 1, 1, 'k-resend-blocked', 'blocked', 0, 0)`,
+        [integrationId]);
+      const batchId = ins.insertId;
+
+      const r = await request(app).post(`/api/integrations/batches/${batchId}/resend`).set('Authorization', bearer(ADMIN1));
+      // Sem secret configurado, a tentativa falha (SECRET_NOT_SET) mas o ponto do teste é que o
+      // batch 'blocked' FOI reivindicado/tentado (não ficou preso em blocked por falta de
+      // includeBlocked:true no resend) — resposta 200 com um resultado de tentativa, nunca 409.
+      expect(r.status).toBe(200);
+
+      const [rows] = await c.query('SELECT status FROM integration_delivery_batches WHERE id = ?', [batchId]);
+      expect(rows[0].status).not.toBe('blocked'); // saiu do estado blocked (virou pending_retry/failed)
+    });
+  });
 });
