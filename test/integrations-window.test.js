@@ -127,6 +127,93 @@ describe('window — DST (America/New_York, spring-forward em 2026-03-08)', () =
   });
 });
 
+describe('window — DST (America/New_York, fall-back em 2026-11-01)', () => {
+  // Em 2026, o "fall back" nos EUA ocorre em 2026-11-01 02:00 -> 01:00 local (EDT UTC-4 -> EST UTC-5).
+  // O dia local 2026-11-01 tem, portanto, 25 horas de relógio (uma hora "repetida").
+  const cfg = {
+    timezone: 'America/New_York',
+    run_at_time: '03:00',
+    frequency: 'daily',
+    last_run_window_end: null,
+  };
+
+  it('janela do dia de transição (2026-11-01) tem 25h de span UTC — documentado/intencional', () => {
+    // "hoje" local = 2026-11-02; janela = dia local 2026-11-01 [00:00,24:00)
+    const nowUtc = new Date('2026-11-02T12:00:00Z');
+    const result = computeDueWindow(cfg, nowUtc);
+    expect(result).not.toBeNull();
+    // início do dia local 11-01 ainda em EDT (UTC-4): 11-01 00:00 -04:00 -> 04:00Z
+    expect(result.start.toISOString()).toBe('2026-11-01T04:00:00.000Z');
+    // início do dia local 11-02 já em EST (UTC-5): 11-02 00:00 -05:00 -> 05:00Z
+    expect(result.end.toISOString()).toBe('2026-11-02T05:00:00.000Z');
+    expect(result.end.getTime() - result.start.getTime()).toBe(90000000); // 25h em ms
+  });
+
+  it('fronteiras do dia local permanecem corretas (00:00 e 24:00 local) mesmo com span de 25h', () => {
+    const nowUtc = new Date('2026-11-02T12:00:00Z');
+    const result = computeDueWindow(cfg, nowUtc);
+    const startLocal = new Intl.DateTimeFormat('en-US', {
+      timeZone: 'America/New_York',
+      hour12: false,
+      hour: '2-digit',
+      day: '2-digit',
+      month: '2-digit',
+    }).formatToParts(result.start);
+    const sh = Object.fromEntries(startLocal.map((p) => [p.type, p.value]));
+    expect(sh.hour).toBe('00');
+    expect(sh.day).toBe('01');
+    expect(sh.month).toBe('11');
+
+    const endLocal = new Intl.DateTimeFormat('en-US', {
+      timeZone: 'America/New_York',
+      hour12: false,
+      hour: '2-digit',
+      day: '2-digit',
+      month: '2-digit',
+    }).formatToParts(result.end);
+    const eh = Object.fromEntries(endLocal.map((p) => [p.type, p.value]));
+    expect(eh.hour).toBe('00');
+    expect(eh.day).toBe('02');
+    expect(eh.month).toBe('11');
+  });
+});
+
+describe('window — idempotência: boundary exato em last_run_window_end (America/Sao_Paulo)', () => {
+  const cfg = {
+    timezone: 'America/Sao_Paulo',
+    run_at_time: '03:00',
+    frequency: 'daily',
+  };
+
+  it('Caso A: last_run_window_end == end da janela ANTERIOR, nowUtc no dia seguinte ao dueAt -> não bloqueia a janela nova', () => {
+    // Janela devida em 2026-03-11 (dia local anterior = 03-10): end = 2026-03-11T03:00:00.000Z
+    const previousWindowEnd = new Date('2026-03-11T03:00:00.000Z');
+    // "Hoje" avança para 2026-03-12; a nova janela devida é o dia local 03-11 (end = 2026-03-12T03:00:00.000Z)
+    const nowUtc = new Date('2026-03-12T10:00:00Z');
+    const cfgNextDay = { ...cfg, last_run_window_end: previousWindowEnd };
+    const result = computeDueWindow(cfgNextDay, nowUtc);
+    expect(result).not.toBeNull();
+    expect(result.end.toISOString()).toBe('2026-03-12T03:00:00.000Z');
+  });
+
+  it('Caso B: last_run_window_end === end da janela ATUAL -> bloqueia (retorna null, sem reprocessar)', () => {
+    const nowUtc = new Date('2026-03-11T10:00:00Z');
+    // end da janela devida hoje (dia local anterior = 03-10): 2026-03-11T03:00:00.000Z
+    const currentWindowEnd = new Date('2026-03-11T03:00:00.000Z');
+    const cfgBlocked = { ...cfg, last_run_window_end: currentWindowEnd };
+    expect(computeDueWindow(cfgBlocked, nowUtc)).toBeNull();
+  });
+
+  it('Caso C: last_run_window_end 1ms ANTES do end da janela atual -> não bloqueia (não-null)', () => {
+    const nowUtc = new Date('2026-03-11T10:00:00Z');
+    const currentWindowEnd = new Date('2026-03-11T03:00:00.000Z');
+    const cfgAlmostBlocked = { ...cfg, last_run_window_end: new Date(currentWindowEnd.getTime() - 1) };
+    const result = computeDueWindow(cfgAlmostBlocked, nowUtc);
+    expect(result).not.toBeNull();
+    expect(result.end.toISOString()).toBe('2026-03-11T03:00:00.000Z');
+  });
+});
+
 describe('window — idempotencyKey', () => {
   const base = {
     tenantId: 42,

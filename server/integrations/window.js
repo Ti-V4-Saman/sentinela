@@ -14,7 +14,7 @@
 // DST (mudança de horário): a janela é sempre definida pelas FRONTEIRAS DE DIA LOCAL (00:00 a
 // 00:00 do dia seguinte, hora local do timezone da integração), nunca por um span fixo de 24h.
 // Em dias de transição de horário de verão, o dia local pode ter 23h (spring-forward, "pula" uma
-// hora) ou 25h (fall-back, "repete" ura hora) de span em UTC. Isso é INTENCIONAL: a semântica do
+// hora) ou 25h (fall-back, "repete" uma hora) de span em UTC. Isso é INTENCIONAL: a semântica do
 // produto é "todas as mensagens do dia de calendário local X", não "as últimas 24 horas".
 
 const MS_PER_MINUTE = 60 * 1000;
