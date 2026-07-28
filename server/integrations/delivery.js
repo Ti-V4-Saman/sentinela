@@ -27,9 +27,9 @@ import { secureDeliver } from './transport.js';
 // Caminho legado (só usado quando o chamador injeta `fetchImpl` explicitamente — hoje só os
 // testes): fetch + assertSafeUrl/checkRedirectTarget separados. NÃO é o caminho de produção.
 async function deliverViaFetchImpl({
-  integration, rawBody, headers, fetchImpl, allowHttp, cfg, startedAt,
+  integration, targetUrl, rawBody, headers, fetchImpl, allowHttp, cfg, startedAt,
 }) {
-  const targetCheck = await assertSafeUrl(integration.target_url, { allowHttp });
+  const targetCheck = await assertSafeUrl(targetUrl, { allowHttp });
   if (!targetCheck.ok) {
     return {
       status: 'failure', http_code: null, duration_ms: Date.now() - startedAt,
@@ -37,7 +37,7 @@ async function deliverViaFetchImpl({
     };
   }
 
-  let currentUrl = integration.target_url;
+  let currentUrl = targetUrl;
   let redirects = 0;
 
   for (;;) {
@@ -111,9 +111,16 @@ async function deliverViaFetchImpl({
 
 // Executa uma única tentativa de entrega. Nunca lança: qualquer falha vira
 // `{ status: 'failure', ... }`.
+//
+// `targetUrl` (opcional): destino EFETIVO da entrega — quando informado, sobrepõe
+// `integration.target_url` tanto na validação SSRF quanto na conexão real. Etapa B, S3: o
+// chamador (deliver-batch-attempt.js) sempre passa o `target_url_snapshot` do batch aqui, para que
+// retry/reenvio entreguem ao destino congelado no momento da criação, não ao destino atual da
+// integração (que pode ter mudado). Default `integration.target_url` mantém compatibilidade com
+// chamadores que ainda não têm um snapshot (ex.: POST /test, que nunca persiste batch).
 export async function deliverBatch({
   integration, secretPlaintext, batchRow, rawBody, timestamp, deliveryId, idempotencyKey,
-  fetchImpl, allowHttp = false, lookupImpl,
+  fetchImpl, allowHttp = false, lookupImpl, targetUrl,
 }) {
   if (!externalIntegrationsEnabled()) {
     // Gate global desligado: NUNCA conecta (nem fetchImpl nem secureDeliver), NUNCA finge sucesso.
@@ -122,6 +129,7 @@ export async function deliverBatch({
 
   const cfg = deliveryConfig();
   const startedAt = Date.now();
+  const effectiveTargetUrl = targetUrl ?? integration.target_url;
 
   const headers = {
     'Content-Type': 'application/json',
@@ -132,11 +140,13 @@ export async function deliverBatch({
   };
 
   if (typeof fetchImpl === 'function') {
-    return deliverViaFetchImpl({ integration, rawBody, headers, fetchImpl, allowHttp, cfg, startedAt });
+    return deliverViaFetchImpl({
+      integration, targetUrl: effectiveTargetUrl, rawBody, headers, fetchImpl, allowHttp, cfg, startedAt,
+    });
   }
 
   const result = await secureDeliver({
-    url: integration.target_url,
+    url: effectiveTargetUrl,
     method: 'POST',
     headers,
     body: rawBody,
@@ -162,7 +172,7 @@ export async function deliverBatch({
 // mock. Cada tentativa (se `recordAttempt` for passado) é persistida via repo.recordAttempt.
 export async function runWithRetries({
   integration, secretPlaintext, batchRow, rawBody, timestamp, deliveryId, idempotencyKey,
-  fetchImpl, allowHttp = false, lookupImpl, recordAttempt, maxAttempts,
+  fetchImpl, allowHttp = false, lookupImpl, recordAttempt, maxAttempts, targetUrl,
 }) {
   const attempts = maxAttempts ?? deliveryConfig().maxAttempts;
   let lastResult = null;
@@ -171,7 +181,7 @@ export async function runWithRetries({
     // eslint-disable-next-line no-await-in-loop
     lastResult = await deliverBatch({
       integration, secretPlaintext, batchRow, rawBody, timestamp, deliveryId, idempotencyKey,
-      fetchImpl, allowHttp, lookupImpl,
+      fetchImpl, allowHttp, lookupImpl, targetUrl,
     });
 
     if (recordAttempt) {

@@ -14,6 +14,22 @@ import { signToken } from '../server/auth/jwt.js';
 import { authenticate } from '../server/middleware/authenticate.js';
 import { createIntegrationsRouter } from '../server/routes/integrations.js';
 import { sanitizeError } from '../server/integrations/config.js';
+import { encodeSnapshot } from '../server/integrations/payload-snapshot.js';
+
+// Helper: colunas de snapshot exigidas por `integration_delivery_batches` (Etapa B, S1/S2) — usado
+// pelos testes de /resend que precisam de um batch REALMENTE entregável (com snapshot), já que
+// `attemptBatchDelivery` (S3) agora carrega o snapshot ANTES de checar o secret e recusa
+// (PAYLOAD_INTEGRITY) qualquer batch sem ele.
+function snapshotSqlFragment(bodyObj = { test: true }) {
+  const rawBody = JSON.stringify(bodyObj);
+  const snap = encodeSnapshot(rawBody);
+  return {
+    rawBody,
+    columns: 'payload_compressed, payload_sha256, payload_size_bytes, payload_encoding, target_url_snapshot',
+    placeholders: '?, ?, ?, ?, ?',
+    values: [snap.compressed, snap.sha256, snap.sizeBytes, snap.encoding, VALID_URL],
+  };
+}
 
 function makeApp(conn) {
   const a = express();
@@ -358,10 +374,14 @@ describe('integrations routes — POST /batches/:id/resend (gate global, anti-co
       const put = await request(app).put('/api/integrations').set('Authorization', bearer(ADMIN1)).send(validBody());
       const integrationId = put.body.id;
       // Config sem secret_encrypted (rotateSecret nunca chamado) — getSigningSecret retorna null.
+      // Batch COM snapshot válido (S3: attemptBatchDelivery carrega o snapshot antes do secret —
+      // sem ele, falharia por PAYLOAD_INTEGRITY em vez de SECRET_NOT_SET, o que não é o que este
+      // teste quer exercitar).
+      const snap = snapshotSqlFragment({ marker: 'resend-nosecret' });
       const [ins] = await c.query(`INSERT INTO integration_delivery_batches
-        (tenant_id, integration_id, schema_version, window_start, window_end, part, part_total, idempotency_key, status, conversation_count, message_count)
-        VALUES (910001, ?, 1, '2026-07-20 00:00:00', '2026-07-21 00:00:00', 1, 1, 'k-resend-nosecret', 'pending', 0, 0)`,
-        [integrationId]);
+        (tenant_id, integration_id, schema_version, window_start, window_end, part, part_total, idempotency_key, status, conversation_count, message_count, ${snap.columns})
+        VALUES (910001, ?, 1, '2026-07-20 00:00:00', '2026-07-21 00:00:00', 1, 1, 'k-resend-nosecret', 'pending', 0, 0, ${snap.placeholders})`,
+        [integrationId, ...snap.values]);
       const batchId = ins.insertId;
 
       const r = await request(app).post(`/api/integrations/batches/${batchId}/resend`).set('Authorization', bearer(ADMIN1));
@@ -412,10 +432,11 @@ describe('integrations routes — POST /batches/:id/resend (gate global, anti-co
       await seed(c); const app = makeApp(c);
       const put = await request(app).put('/api/integrations').set('Authorization', bearer(ADMIN1)).send(validBody());
       const integrationId = put.body.id;
+      const snap = snapshotSqlFragment({ marker: 'resend-blocked' });
       const [ins] = await c.query(`INSERT INTO integration_delivery_batches
-        (tenant_id, integration_id, schema_version, window_start, window_end, part, part_total, idempotency_key, status, conversation_count, message_count)
-        VALUES (910001, ?, 1, '2026-07-20 00:00:00', '2026-07-21 00:00:00', 1, 1, 'k-resend-blocked', 'blocked', 0, 0)`,
-        [integrationId]);
+        (tenant_id, integration_id, schema_version, window_start, window_end, part, part_total, idempotency_key, status, conversation_count, message_count, ${snap.columns})
+        VALUES (910001, ?, 1, '2026-07-20 00:00:00', '2026-07-21 00:00:00', 1, 1, 'k-resend-blocked', 'blocked', 0, 0, ${snap.placeholders})`,
+        [integrationId, ...snap.values]);
       const batchId = ins.insertId;
 
       const r = await request(app).post(`/api/integrations/batches/${batchId}/resend`).set('Authorization', bearer(ADMIN1));
@@ -426,6 +447,44 @@ describe('integrations routes — POST /batches/:id/resend (gate global, anti-co
 
       const [rows] = await c.query('SELECT status FROM integration_delivery_batches WHERE id = ?', [batchId]);
       expect(rows[0].status).not.toBe('blocked'); // saiu do estado blocked (virou pending_retry/failed)
+    });
+  });
+
+  // Etapa B, S3, teste obrigatório 12: reenvio manual usa o MESMO snapshot que o retry
+  // automático usaria — nunca reconstrói. Como a rota real não injeta fetchImpl (produção sempre
+  // usa o transporte seguro), a prova aqui é que a integridade do snapshot é o que decide o
+  // resultado: um snapshot ADULTERADO faz o reenvio recusar com PAYLOAD_INTEGRITY (nunca tenta
+  // rede), exatamente a mesma proteção que o job usa — confirmando que ambos os caminhos passam
+  // pelo mesmo `attemptBatchDelivery`/`loadBatchSnapshot`, sem lógica divergente de reconstrução.
+  it('12. reenvio manual com snapshot ADULTERADO no banco recusa com PAYLOAD_INTEGRITY (mesma proteção do retry automático)', async () => {
+    await withTx(async (c) => {
+      process.env.EXTERNAL_INTEGRATIONS_ENABLED = 'true';
+      await seed(c); const app = makeApp(c);
+      const put = await request(app).put('/api/integrations').set('Authorization', bearer(ADMIN1)).send(validBody());
+      const integrationId = put.body.id;
+      const snap = snapshotSqlFragment({ marker: 'resend-tamper' });
+      const [ins] = await c.query(`INSERT INTO integration_delivery_batches
+        (tenant_id, integration_id, schema_version, window_start, window_end, part, part_total, idempotency_key, status, conversation_count, message_count, ${snap.columns})
+        VALUES (910001, ?, 1, '2026-07-20 00:00:00', '2026-07-21 00:00:00', 1, 1, 'k-resend-tamper', 'pending', 0, 0, ${snap.placeholders})`,
+        [integrationId, ...snap.values]);
+      const batchId = ins.insertId;
+
+      await c.query(
+        'UPDATE integration_delivery_batches SET payload_compressed = ? WHERE id = ?',
+        [Buffer.from('nao-e-gzip-valido'), batchId],
+      );
+
+      const r = await request(app).post(`/api/integrations/batches/${batchId}/resend`).set('Authorization', bearer(ADMIN1));
+      expect(r.status).toBe(200);
+      expect(r.body.status).toBe('failure');
+      expect(r.body.batchStatus).toBe('failed'); // não-retryable: nunca fica pending_retry
+
+      const [rows] = await c.query('SELECT status FROM integration_delivery_batches WHERE id = ?', [batchId]);
+      expect(rows[0].status).toBe('failed');
+
+      const [attempts] = await c.query('SELECT * FROM integration_delivery_attempts WHERE batch_id = ?', [batchId]);
+      expect(attempts).toHaveLength(1);
+      expect(attempts[0].error).toBe('PAYLOAD_INTEGRITY');
     });
   });
 

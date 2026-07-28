@@ -4,8 +4,13 @@ import { getPool, applyMigrations, withTx } from './helpers/db.js';
 import { deliverBatch, runWithRetries } from '../server/integrations/delivery.js';
 import {
   createBatch, loadWindowData, loadBatchSnapshot, listBatches, getBatch,
+  claimBatchForAttempt,
 } from '../server/integrations/repo.js';
 import { encodeSnapshot } from '../server/integrations/payload-snapshot.js';
+import { buildPayload, chunkPayload } from '../server/integrations/payload.js';
+import { idempotencyKey } from '../server/integrations/window.js';
+import { encryptSecret } from '../server/integrations/secret.js';
+import { attemptBatchDelivery } from '../server/integrations/deliver-batch-attempt.js';
 
 // Helper de teste: monta os campos de snapshot mínimos exigidos por createBatch a partir de um
 // corpo qualquer (default determinístico) — usado pelos testes que só querem exercitar a
@@ -719,6 +724,455 @@ describe('repo.loadWindowData — isolamento tenant + include_groups', () => {
       expect(data.messages).toHaveLength(1);
       expect(data.messages[0].chat_id).toBe('chA-direct');
       expect(data.conversations.every((c) => c.is_group === false)).toBe(true);
+    });
+  });
+});
+
+// ---- Etapa B, S3 — entrega usa o snapshot imutável (attemptBatchDelivery NUNCA reconstrói) ----
+//
+// Ver docs/superpowers/plans/2026-07-28-etapaB-payload-snapshot.md, seção "Testes obrigatórios".
+// Estes testes montam um batch da MESMA forma que o job faria (loadWindowData -> buildPayload ->
+// chunkPayload -> encodeSnapshot -> createBatch), depois exercitam `attemptBatchDelivery`
+// diretamente (o helper compartilhado job/resend) capturando os bytes exatos enviados via
+// `fetchImpl`, para provar que retry/reenvio nunca recalculam o corpo a partir do banco.
+
+const SNAP_SECRET_KEY_HEX = '4'.repeat(64);
+const SNAP_SECRET_KEY = Buffer.from(SNAP_SECRET_KEY_HEX, 'hex');
+
+function snapCurrentKey() {
+  const raw = process.env.INTEGRATIONS_SECRET_KEY || SNAP_SECRET_KEY_HEX;
+  return /^[0-9a-fA-F]{64}$/.test(raw) ? Buffer.from(raw, 'hex') : Buffer.from(raw, 'base64');
+}
+
+// Cria tenant + integração + UM batch real (snapshot construído a partir de mensagens de verdade
+// no banco), igual ao que `createDueBatches` (job) faz. Retorna { batch, integration, tenantId }.
+async function seedRealSnapshotBatch(conn, {
+  tenantId, integrationId, messages, targetUrl = 'https://example.com/webhook', withSecret = true,
+  includeAudioTranscripts = 0,
+}) {
+  await conn.query("INSERT INTO tenants (id, name, status) VALUES (?, ?, 'active')", [tenantId, `T-${tenantId}`]);
+  const secretEncrypted = withSecret ? encryptSecret(`whsec_snap-${integrationId}`, snapCurrentKey()) : null;
+  await conn.query(
+    `INSERT INTO tenant_integrations
+       (id, tenant_id, type, active, target_url, secret_encrypted, secret_masked, frequency, run_at_time, timezone,
+        include_direct, include_groups, include_from_me, include_audio_transcripts)
+     VALUES (?, ?, 'webhook_batch', 1, ?, ?, 'whsec_••••fake', 'daily', '03:00', 'America/Sao_Paulo', 1, 1, 1, ?)`,
+    [integrationId, tenantId, targetUrl, secretEncrypted, includeAudioTranscripts],
+  );
+  await conn.query(
+    `INSERT INTO chats (id, tenant_id, title, is_group) VALUES (?, ?, NULL, 0)`,
+    [`chat-${integrationId}`, tenantId],
+  );
+  for (const m of messages) {
+    // eslint-disable-next-line no-await-in-loop
+    await conn.query(
+      `INSERT INTO messages (id, tenant_id, chat_id, text, type, from_me, from_internal, timestamp)
+       VALUES (?, ?, ?, ?, ?, 0, 0, ?)`,
+      [m.id, tenantId, `chat-${integrationId}`, m.text, m.type || 'text', m.timestamp],
+    );
+  }
+
+  const [[cfg]] = await conn.query(
+    'SELECT * FROM tenant_integrations WHERE id = ? AND tenant_id = ?', [integrationId, tenantId],
+  );
+  const window = { start: new Date('2026-07-20T00:00:00Z'), end: new Date('2026-07-21T00:00:00Z') };
+  const { conversations, messages: loadedMessages } = await loadWindowData(conn, tenantId, cfg, window);
+  const fullPayload = buildPayload({
+    tenant: { id: tenantId }, integration: cfg, window, conversations, messages: loadedMessages, schemaVersion: 1,
+  });
+  const parts = chunkPayload(fullPayload, {});
+  const part = parts[0];
+  const rawBody = JSON.stringify(part);
+  const snap = encodeSnapshot(rawBody);
+  const key = idempotencyKey({
+    tenantId, integrationId, windowStart: window.start, windowEnd: window.end, schemaVersion: 1, part: part.batch.part,
+  });
+
+  const { id } = await createBatch(conn, {
+    tenantId, integrationId, schemaVersion: 1, windowStart: window.start, windowEnd: window.end,
+    part: part.batch.part, partTotal: part.batch.part_total, idempotencyKey: key,
+    conversationCount: part.conversations.length, messageCount: part.messages.length,
+    initialStatus: 'pending',
+    payloadCompressed: snap.compressed, payloadSha256: snap.sha256,
+    payloadSizeBytes: snap.sizeBytes, payloadEncoding: snap.encoding,
+    targetUrlSnapshot: cfg.target_url,
+    contentOptionsSnapshot: {
+      include_direct: !!cfg.include_direct, include_groups: !!cfg.include_groups,
+      include_from_me: !!cfg.include_from_me, include_audio_transcripts: !!cfg.include_audio_transcripts,
+    },
+  });
+  const [[batch]] = await conn.query('SELECT * FROM integration_delivery_batches WHERE id = ?', [id]);
+  return { batch, integration: cfg, tenantId, rawBody };
+}
+
+async function claimAndAttempt(conn, { tenantId, integration, batch, now, fetchImpl, auditAction = 'deliver_integration' }) {
+  const claim = await claimBatchForAttempt(conn, batch.id, { now, includeBlocked: true });
+  expect(claim.claimed).toBe(true);
+  const [[freshBatch]] = await conn.query('SELECT * FROM integration_delivery_batches WHERE id = ?', [batch.id]);
+  return attemptBatchDelivery(conn, {
+    tenantId, integration, batch: freshBatch, now, secretKey: snapCurrentKey(), allowHttp: true,
+    fetchImpl, deliveryIdPrefix: 'test', auditAction,
+  });
+}
+
+describe('attemptBatchDelivery — usa o snapshot imutável (Etapa B, S3)', () => {
+  it('1. retry usa os MESMOS bytes da 1ª tentativa', async () => {
+    await withTx(async (conn) => {
+      process.env.EXTERNAL_INTEGRATIONS_ENABLED = 'true';
+      const tenantId = 940001;
+      const seeded = await seedRealSnapshotBatch(conn, {
+        tenantId, integrationId: tenantId,
+        messages: [{ id: 'm1', text: 'ola', timestamp: '2026-07-20 10:00:00' }],
+      });
+
+      const bodies = [];
+      const failThenSucceed = async (_url, init) => {
+        bodies.push(init.body);
+        return bodies.length === 1
+          ? { status: 500, headers: fakeHeaders() }
+          : { status: 200, headers: fakeHeaders() };
+      };
+
+      const first = await claimAndAttempt(conn, {
+        tenantId, integration: seeded.integration, batch: seeded.batch, now: new Date('2026-07-22T00:00:00Z'), fetchImpl: failThenSucceed,
+      });
+      expect(first.attemptStatus).toBe('pending_retry');
+
+      const second = await claimAndAttempt(conn, {
+        tenantId, integration: seeded.integration, batch: seeded.batch, now: new Date('2026-07-22T01:00:00Z'), fetchImpl: failThenSucceed,
+      });
+      expect(second.attemptStatus).toBe('delivered');
+
+      expect(bodies).toHaveLength(2);
+      expect(bodies[0]).toBe(bodies[1]);
+      expect(bodies[0]).toBe(seeded.rawBody);
+    });
+  });
+
+  it('2. mensagem ALTERADA após criação do batch NÃO muda o corpo do retry', async () => {
+    await withTx(async (conn) => {
+      process.env.EXTERNAL_INTEGRATIONS_ENABLED = 'true';
+      const tenantId = 940002;
+      const seeded = await seedRealSnapshotBatch(conn, {
+        tenantId, integrationId: tenantId,
+        messages: [{ id: 'm1', text: 'texto original', timestamp: '2026-07-20 10:00:00' }],
+      });
+
+      await conn.query("UPDATE messages SET text = 'TEXTO ALTERADO DEPOIS' WHERE id = 'm1'");
+
+      let capturedBody = null;
+      const fetchImpl = async (_url, init) => { capturedBody = init.body; return { status: 200, headers: fakeHeaders() }; };
+      const result = await claimAndAttempt(conn, {
+        tenantId, integration: seeded.integration, batch: seeded.batch, now: new Date('2026-07-22T00:00:00Z'), fetchImpl,
+      });
+
+      expect(result.attemptStatus).toBe('delivered');
+      expect(capturedBody).toBe(seeded.rawBody);
+      expect(capturedBody).not.toMatch(/TEXTO ALTERADO DEPOIS/);
+      expect(capturedBody).toMatch(/texto original/);
+    });
+  });
+
+  it('3. mensagem EXCLUÍDA após criação do batch NÃO muda o corpo do retry', async () => {
+    await withTx(async (conn) => {
+      process.env.EXTERNAL_INTEGRATIONS_ENABLED = 'true';
+      const tenantId = 940003;
+      const seeded = await seedRealSnapshotBatch(conn, {
+        tenantId, integrationId: tenantId,
+        messages: [{ id: 'm1', text: 'vai ser apagada', timestamp: '2026-07-20 10:00:00' }],
+      });
+
+      await conn.query("DELETE FROM messages WHERE id = 'm1'");
+
+      let capturedBody = null;
+      const fetchImpl = async (_url, init) => { capturedBody = init.body; return { status: 200, headers: fakeHeaders() }; };
+      const result = await claimAndAttempt(conn, {
+        tenantId, integration: seeded.integration, batch: seeded.batch, now: new Date('2026-07-22T00:00:00Z'), fetchImpl,
+      });
+
+      expect(result.attemptStatus).toBe('delivered');
+      expect(capturedBody).toBe(seeded.rawBody);
+      expect(capturedBody).toMatch(/vai ser apagada/);
+    });
+  });
+
+  it('4. transcrição ADICIONADA depois da criação NÃO muda o corpo do retry', async () => {
+    await withTx(async (conn) => {
+      process.env.EXTERNAL_INTEGRATIONS_ENABLED = 'true';
+      const tenantId = 940004;
+      const seeded = await seedRealSnapshotBatch(conn, {
+        tenantId, integrationId: tenantId,
+        messages: [{ id: 'm1', text: 'oi', timestamp: '2026-07-20 10:00:00' }],
+        includeAudioTranscripts: 0,
+      });
+
+      // "Transcrição tardia": um áudio novo (nunca existia no momento da criação do batch).
+      await conn.query(
+        `INSERT INTO messages (id, tenant_id, chat_id, text, type, from_me, from_internal, timestamp)
+         VALUES ('m2-audio', ?, ?, 'transcricao tardia', 'audio', 0, 0, '2026-07-20 10:05:00')`,
+        [tenantId, `chat-${tenantId}`],
+      );
+
+      let capturedBody = null;
+      const fetchImpl = async (_url, init) => { capturedBody = init.body; return { status: 200, headers: fakeHeaders() }; };
+      const result = await claimAndAttempt(conn, {
+        tenantId, integration: seeded.integration, batch: seeded.batch, now: new Date('2026-07-22T00:00:00Z'), fetchImpl,
+      });
+
+      expect(result.attemptStatus).toBe('delivered');
+      expect(capturedBody).toBe(seeded.rawBody);
+      expect(capturedBody).not.toMatch(/transcricao tardia/);
+    });
+  });
+
+  it('5. config de inclusão de conteúdo alterada depois NÃO muda o payload do batch já criado', async () => {
+    await withTx(async (conn) => {
+      process.env.EXTERNAL_INTEGRATIONS_ENABLED = 'true';
+      const tenantId = 940005;
+      const seeded = await seedRealSnapshotBatch(conn, {
+        tenantId, integrationId: tenantId,
+        messages: [{ id: 'm1', text: 'oi', timestamp: '2026-07-20 10:00:00' }],
+      });
+
+      // Muda a config da integração (ex.: desliga include_from_me) DEPOIS do batch criado.
+      await conn.query('UPDATE tenant_integrations SET include_from_me = 0 WHERE id = ?', [tenantId]);
+      const [[updatedCfg]] = await conn.query('SELECT * FROM tenant_integrations WHERE id = ?', [tenantId]);
+
+      let capturedBody = null;
+      const fetchImpl = async (_url, init) => { capturedBody = init.body; return { status: 200, headers: fakeHeaders() }; };
+      const result = await claimAndAttempt(conn, {
+        tenantId, integration: updatedCfg, batch: seeded.batch, now: new Date('2026-07-22T00:00:00Z'), fetchImpl,
+      });
+
+      expect(result.attemptStatus).toBe('delivered');
+      expect(capturedBody).toBe(seeded.rawBody);
+    });
+  });
+
+  it('6. chunking diferente aplicado depois não altera a parte já persistida', async () => {
+    await withTx(async (conn) => {
+      process.env.EXTERNAL_INTEGRATIONS_ENABLED = 'true';
+      const tenantId = 940006;
+      const seeded = await seedRealSnapshotBatch(conn, {
+        tenantId, integrationId: tenantId,
+        messages: [
+          { id: 'm1', text: 'a', timestamp: '2026-07-20 10:00:00' },
+          { id: 'm2', text: 'b', timestamp: '2026-07-20 10:01:00' },
+        ],
+      });
+
+      // Simula uma execução posterior que usaria um chunking bem diferente (maxMessages:1) — isso
+      // NUNCA deve afetar o batch/parte já persistidos, pois attemptBatchDelivery não rechunk.
+      let capturedBody = null;
+      const fetchImpl = async (_url, init) => { capturedBody = init.body; return { status: 200, headers: fakeHeaders() }; };
+      const result = await claimAndAttempt(conn, {
+        tenantId, integration: seeded.integration, batch: seeded.batch, now: new Date('2026-07-22T00:00:00Z'), fetchImpl,
+      });
+
+      expect(result.attemptStatus).toBe('delivered');
+      expect(capturedBody).toBe(seeded.rawBody);
+      expect(JSON.parse(capturedBody).messages).toHaveLength(2);
+    });
+  });
+
+  it('7. a mesma idempotency_key sempre corresponde ao mesmo payload_sha256', async () => {
+    await withTx(async (conn) => {
+      process.env.EXTERNAL_INTEGRATIONS_ENABLED = 'true';
+      const tenantId = 940007;
+      const seeded = await seedRealSnapshotBatch(conn, {
+        tenantId, integrationId: tenantId,
+        messages: [{ id: 'm1', text: 'oi', timestamp: '2026-07-20 10:00:00' }],
+      });
+      const expectedSha = encodeSnapshot(seeded.rawBody).sha256;
+
+      const [[row1]] = await conn.query(
+        'SELECT payload_sha256 FROM integration_delivery_batches WHERE idempotency_key = ?', [seeded.batch.idempotency_key],
+      );
+      expect(row1.payload_sha256).toBe(expectedSha);
+
+      // Uma segunda "tentativa de criação" com a mesma idempotency_key (ex.: reprocessamento do
+      // job) nunca substitui o snapshot nem produz um sha diferente.
+      const dup = await createBatch(conn, {
+        tenantId, integrationId: tenantId, schemaVersion: 1,
+        windowStart: seeded.batch.window_start, windowEnd: seeded.batch.window_end, part: seeded.batch.part,
+        partTotal: seeded.batch.part_total, idempotencyKey: seeded.batch.idempotency_key,
+        conversationCount: 0, messageCount: 0,
+        ...encodeSnapshot(JSON.stringify({ different: true })),
+        payloadCompressed: encodeSnapshot(JSON.stringify({ different: true })).compressed,
+        payloadSha256: encodeSnapshot(JSON.stringify({ different: true })).sha256,
+        payloadSizeBytes: encodeSnapshot(JSON.stringify({ different: true })).sizeBytes,
+        payloadEncoding: encodeSnapshot(JSON.stringify({ different: true })).encoding,
+      });
+      expect(dup.created).toBe(false);
+      const [[row2]] = await conn.query(
+        'SELECT payload_sha256 FROM integration_delivery_batches WHERE idempotency_key = ?', [seeded.batch.idempotency_key],
+      );
+      expect(row2.payload_sha256).toBe(expectedSha);
+    });
+  });
+
+  it('8. payload adulterado no banco é detectado e NÃO enviado (PAYLOAD_INTEGRITY, fetch nunca chamado)', async () => {
+    await withTx(async (conn) => {
+      process.env.EXTERNAL_INTEGRATIONS_ENABLED = 'true';
+      const tenantId = 940008;
+      const seeded = await seedRealSnapshotBatch(conn, {
+        tenantId, integrationId: tenantId,
+        messages: [{ id: 'm1', text: 'oi', timestamp: '2026-07-20 10:00:00' }],
+      });
+
+      await conn.query(
+        'UPDATE integration_delivery_batches SET payload_compressed = ? WHERE id = ?',
+        [Buffer.from('lixo-nao-e-gzip-valido'), seeded.batch.id],
+      );
+
+      let called = false;
+      const fetchImpl = async () => { called = true; return { status: 200, headers: fakeHeaders() }; };
+      const result = await claimAndAttempt(conn, {
+        tenantId, integration: seeded.integration, batch: seeded.batch, now: new Date('2026-07-22T00:00:00Z'), fetchImpl,
+      });
+
+      expect(called).toBe(false);
+      expect(result.attemptStatus).toBe('failed');
+      expect(result.error).toBe('PAYLOAD_INTEGRITY');
+
+      const [[row]] = await conn.query('SELECT status FROM integration_delivery_batches WHERE id = ?', [seeded.batch.id]);
+      expect(row.status).toBe('failed'); // não-entregável: nunca fica pending_retry (não se auto-corrige)
+
+      const [attempts] = await conn.query('SELECT * FROM integration_delivery_attempts WHERE batch_id = ?', [seeded.batch.id]);
+      expect(attempts).toHaveLength(1);
+      expect(attempts[0].status).toBe('failure');
+      expect(attempts[0].error).toBe('PAYLOAD_INTEGRITY');
+    });
+  });
+
+  it('9. batch com snapshot NULL não é enviado (PAYLOAD_INTEGRITY)', async () => {
+    await withTx(async (conn) => {
+      process.env.EXTERNAL_INTEGRATIONS_ENABLED = 'true';
+      const tenantId = 940009;
+      await conn.query("INSERT INTO tenants (id, name, status) VALUES (?, ?, 'active')", [tenantId, `T-${tenantId}`]);
+      await conn.query(
+        `INSERT INTO tenant_integrations (id, tenant_id, type, active, target_url, secret_encrypted, secret_masked)
+         VALUES (?, ?, 'webhook_batch', 1, 'https://example.com/webhook', ?, 'whsec_••••fake')`,
+        [tenantId, tenantId, encryptSecret('whsec_x', snapCurrentKey())],
+      );
+      const [ins] = await conn.query(
+        `INSERT INTO integration_delivery_batches
+           (tenant_id, integration_id, schema_version, window_start, window_end, part, part_total,
+            idempotency_key, status, conversation_count, message_count)
+         VALUES (?, ?, 1, '2026-07-20 00:00:00', '2026-07-21 00:00:00', 1, 1, 'idem-nosnap-attempt', 'pending', 0, 0)`,
+        [tenantId, tenantId],
+      );
+      const [[cfg]] = await conn.query('SELECT * FROM tenant_integrations WHERE id = ?', [tenantId]);
+      const [[batch]] = await conn.query('SELECT * FROM integration_delivery_batches WHERE id = ?', [ins.insertId]);
+
+      let called = false;
+      const fetchImpl = async () => { called = true; return { status: 200, headers: fakeHeaders() }; };
+      const result = await claimAndAttempt(conn, {
+        tenantId, integration: cfg, batch, now: new Date('2026-07-22T00:00:00Z'), fetchImpl,
+      });
+
+      expect(called).toBe(false);
+      expect(result.attemptStatus).toBe('failed');
+      expect(result.error).toBe('PAYLOAD_INTEGRITY');
+    });
+  });
+
+  it('12/13. reenvio manual (auditAction resend) usa o MESMO snapshot; um redirect no meio do caminho continua assinando/enviando os mesmos bytes', async () => {
+    await withTx(async (conn) => {
+      process.env.EXTERNAL_INTEGRATIONS_ENABLED = 'true';
+      const tenantId = 940012;
+      const seeded = await seedRealSnapshotBatch(conn, {
+        tenantId, integrationId: tenantId,
+        messages: [{ id: 'm1', text: 'oi', timestamp: '2026-07-20 10:00:00' }],
+      });
+
+      const bodies = [];
+      const withRedirect = async (url, init) => {
+        bodies.push(init.body);
+        if (bodies.length === 1) {
+          return { status: 302, headers: fakeHeaders({ location: 'https://example.com/webhook-final' }) };
+        }
+        return { status: 200, headers: fakeHeaders() };
+      };
+
+      const result = await claimAndAttempt(conn, {
+        tenantId, integration: seeded.integration, batch: seeded.batch, now: new Date('2026-07-22T00:00:00Z'),
+        fetchImpl: withRedirect, auditAction: 'resend_integration_batch',
+      });
+
+      expect(result.attemptStatus).toBe('delivered');
+      expect(bodies).toHaveLength(2); // 1 redirect + 1 hop final
+      expect(bodies[0]).toBe(seeded.rawBody);
+      expect(bodies[1]).toBe(seeded.rawBody); // o hop seguido reenvia o MESMO corpo, nunca reconstruído
+
+      const [attemptRows] = await conn.query(
+        "SELECT * FROM integration_delivery_attempts WHERE batch_id = ? AND status = 'success'", [seeded.batch.id],
+      );
+      expect(attemptRows).toHaveLength(1);
+    });
+  });
+
+  it('14. o HMAC enviado é calculado sobre os bytes persistidos (recomputado pelo receptor bate)', async () => {
+    await withTx(async (conn) => {
+      process.env.EXTERNAL_INTEGRATIONS_ENABLED = 'true';
+      const tenantId = 940014;
+      const seeded = await seedRealSnapshotBatch(conn, {
+        tenantId, integrationId: tenantId,
+        messages: [{ id: 'm1', text: 'oi', timestamp: '2026-07-20 10:00:00' }],
+      });
+
+      let receivedHeaders = null;
+      let receivedBody = null;
+      let receivedTimestamp = null;
+      const fetchImpl = async (_url, init) => {
+        receivedHeaders = init.headers;
+        receivedBody = init.body;
+        receivedTimestamp = init.headers['X-Sentinela-Timestamp'];
+        return { status: 200, headers: fakeHeaders() };
+      };
+
+      const result = await claimAndAttempt(conn, {
+        tenantId, integration: seeded.integration, batch: seeded.batch, now: new Date('2026-07-22T00:00:00Z'), fetchImpl,
+      });
+      expect(result.attemptStatus).toBe('delivered');
+      expect(receivedBody).toBe(seeded.rawBody);
+
+      const secretPlaintext = `whsec_snap-${tenantId}`;
+      const expectedHex = createHmac('sha256', secretPlaintext)
+        .update(`${receivedTimestamp}.${receivedBody}`, 'utf8')
+        .digest('hex');
+      const providedHex = receivedHeaders['X-Sentinela-Signature'].slice('sha256='.length);
+      expect(providedHex).toBe(expectedHex);
+    });
+  });
+
+  it('a URL de entrega usada é o target_url_snapshot (não o target_url atual da integração)', async () => {
+    await withTx(async (conn) => {
+      process.env.EXTERNAL_INTEGRATIONS_ENABLED = 'true';
+      const tenantId = 940015;
+      const seeded = await seedRealSnapshotBatch(conn, {
+        tenantId, integrationId: tenantId,
+        messages: [{ id: 'm1', text: 'oi', timestamp: '2026-07-20 10:00:00' }],
+        targetUrl: 'https://example.com/webhook-original',
+      });
+
+      // Config muda de URL DEPOIS do batch criado (retry deve continuar indo para a URL original).
+      // Usa outro path no MESMO domínio resolvível (example.com) — o ponto do teste é a URL
+      // completa usada na entrega, não a resolução DNS (fora do escopo deste teste).
+      await conn.query(
+        "UPDATE tenant_integrations SET target_url = 'https://example.com/webhook-novo-destino' WHERE id = ?",
+        [tenantId],
+      );
+      const [[updatedCfg]] = await conn.query('SELECT * FROM tenant_integrations WHERE id = ?', [tenantId]);
+
+      let receivedUrl = null;
+      const fetchImpl = async (url) => { receivedUrl = url; return { status: 200, headers: fakeHeaders() }; };
+      const result = await claimAndAttempt(conn, {
+        tenantId, integration: updatedCfg, batch: seeded.batch, now: new Date('2026-07-22T00:00:00Z'), fetchImpl,
+      });
+
+      expect(result.attemptStatus).toBe('delivered');
+      expect(receivedUrl).toBe('https://example.com/webhook-original');
     });
   });
 });

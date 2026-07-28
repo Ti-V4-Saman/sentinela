@@ -714,3 +714,52 @@ describe('runDispatch — logs sanitizados', () => {
     });
   });
 });
+
+// ---- Etapa B, S3 — teste obrigatório 11: logs/auditoria nunca incluem o corpo do payload ----
+describe('runDispatch — logs e auditoria não incluem o corpo do payload (Etapa B, S3, teste 11)', () => {
+  it('mensagem de texto distintiva do payload nunca aparece em console.log/console.error nem em access_logs.metadata', async () => {
+    await withTx(async (conn) => {
+      process.env.EXTERNAL_INTEGRATIONS_ENABLED = 'true';
+      const tenantId = 932001;
+      const integrationId = 932001;
+      await seedTenantAndIntegration(conn, { tenantId, integrationId });
+
+      const MARKER = 'CONTEUDO-SECRETO-DA-MENSAGEM-QUE-NUNCA-PODE-VAZAR-EM-LOG';
+      await conn.query(
+        `INSERT INTO chats (id, tenant_id, title, is_group) VALUES ('chat-932001', ?, NULL, 0)`,
+        [tenantId],
+      );
+      await conn.query(
+        `INSERT INTO messages (id, tenant_id, chat_id, text, type, from_me, from_internal, timestamp)
+         VALUES ('mkr1', ?, 'chat-932001', ?, 'text', 0, 0, '2026-03-10 10:00:00')`,
+        [tenantId, MARKER],
+      );
+
+      const logs = [];
+      const originalLog = console.log;
+      const originalError = console.error;
+      console.log = (...args) => logs.push(args.join(' '));
+      console.error = (...args) => logs.push(args.join(' '));
+      let result;
+      try {
+        const fetchImpl = async () => ({ status: 200, headers: fakeHeaders() });
+        result = await runDispatch({ pool: conn, now: NOW, fetchImpl, allowHttp: true });
+      } finally {
+        console.log = originalLog;
+        console.error = originalError;
+      }
+
+      expect(result.exitCode).toBe(0);
+      const joined = logs.join('\n');
+      expect(joined).not.toContain(MARKER);
+
+      const [auditRows] = await conn.query(
+        "SELECT metadata FROM access_logs WHERE tenant_id = ? AND action = 'deliver_integration'",
+        [tenantId],
+      );
+      expect(auditRows.length).toBeGreaterThan(0);
+      const auditJoined = JSON.stringify(auditRows.map((r) => r.metadata));
+      expect(auditJoined).not.toContain(MARKER);
+    });
+  });
+});

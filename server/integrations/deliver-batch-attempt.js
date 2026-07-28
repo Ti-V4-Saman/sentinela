@@ -22,9 +22,23 @@
 //   UI) sem exigir reenvio manual — melhor deixar o retry natural do job redescobrir o secret já
 //   configurado do que exigir uma ação manual adicional. Esgotado o maxAttempts, vira `failed`
 //   normalmente e fica visível para o operador investigar.
+// - PAYLOAD_INTEGRITY (snapshot ausente/corrompido/adulterado no banco) é NÃO-RETRYABLE e nunca
+//   passa por `scheduleRetry`: diferente de SECRET_NOT_SET, um snapshot ausente/adulterado não se
+//   corrige sozinho com o tempo — insistir só reagendaria uma falha idêntica indefinidamente. O
+//   batch vai direto para `failed` (terminal), visível para investigação/recriação manual.
+//
+// Rotação de secret (Etapa B, S3 — ver docs/superpowers/plans/2026-07-28-etapaB-payload-snapshot.md,
+// regra 5): cada tentativa (1ª, retry automático, reenvio manual) usa o secret CORRENTE do tenant
+// no momento em que RODA (`getSigningSecret`, decifrado sob demanda a cada chamada — nunca
+// cacheado). Se o secret for rotacionado entre tentativas, a tentativa seguinte assina com o novo
+// secret; o receptor deve validar com o secret vigente na UI (o anterior é invalidado pela
+// rotação). O payload (bytes exatos) e a `idempotency_key` permanecem imutáveis — só a ASSINATURA
+// muda de secret; nenhum plaintext de secret é persistido no batch (só cifrado, no
+// `tenant_integrations`, via `getSigningSecret`/`rotateSecret` em repo.js).
 
-import { getSigningSecret, loadWindowData, recordAttempt, markDelivered, scheduleRetry } from './repo.js';
-import { buildPayload, chunkPayload } from './payload.js';
+import {
+  getSigningSecret, loadBatchSnapshot, recordAttempt, markDelivered, scheduleRetry,
+} from './repo.js';
 import { deliverBatch } from './delivery.js';
 import { deliveryConfig } from './config.js';
 import { writeAudit } from '../audit.js';
@@ -44,23 +58,6 @@ function isRetryable(error, httpCode) {
   return RETRYABLE_CODES.has(error);
 }
 
-// Reconstrói o payload exato da parte deste batch a partir da janela persistida (nunca recalcula a
-// janela — usa window_start/window_end/part já gravados no batch, igual a `manualResendWindow`).
-async function rebuildPartPayload(pool, { tenantId, integration, batch }) {
-  const window = { start: batch.window_start, end: batch.window_end };
-  const { conversations, messages } = await loadWindowData(pool, tenantId, integration, window);
-  const fullPayload = buildPayload({
-    tenant: { id: tenantId },
-    integration,
-    window,
-    conversations,
-    messages,
-    schemaVersion: batch.schema_version,
-  });
-  const parts = chunkPayload(fullPayload, {});
-  return parts.find((p) => p.batch.part === batch.part) || parts[0];
-}
-
 // Executa UMA tentativa de entrega para um batch já em `delivering`. Nunca lança — qualquer
 // exceção interna (DB/crypto/URL/HTTP) é responsabilidade do CHAMADOR sanitizar/logar; aqui
 // devolvemos sempre um resultado estruturado.
@@ -78,14 +75,33 @@ export async function attemptBatchDelivery(pool, {
   const effectiveBackoff = backoffMinutes ?? cfg.backoffMinutes;
   const attemptNo = batch.attempt_count + 1;
 
+  // Etapa B, S3 — NUNCA reconstrói o payload: carrega o snapshot EXATO persistido na criação do
+  // batch (ver docs/superpowers/plans/2026-07-28-etapaB-payload-snapshot.md, regra 3). Se o
+  // snapshot estiver ausente (batch pré-existente sem snapshot) ou adulterado no banco,
+  // `loadBatchSnapshot` lança PAYLOAD_INTEGRITY — tratado abaixo como falha NÃO-RETRYABLE direta
+  // (nunca envia um corpo reconstruído/vazio, nunca agenda retry para um problema que não se
+  // autocorrige).
+  let snap;
+  try {
+    snap = await loadBatchSnapshot(pool, batch.id);
+  } catch (e) {
+    if (e && e.message === 'PAYLOAD_INTEGRITY') {
+      return failNonRetryable(pool, {
+        tenantId, batch, attemptNo, auditAction, error: 'PAYLOAD_INTEGRITY',
+      });
+    }
+    throw e;
+  }
+
+  // Secret CORRENTE do tenant (rotação — ver comentário no topo do arquivo): decifrado sob
+  // demanda a cada tentativa, nunca cacheado entre tentativas.
   const secretPlaintext = await getSigningSecret(pool, tenantId, secretKey);
 
   let result;
   if (!secretPlaintext) {
     result = { status: 'failure', http_code: null, duration_ms: 0, error: 'SECRET_NOT_SET' };
   } else {
-    const part = await rebuildPartPayload(pool, { tenantId, integration, batch });
-    const rawBody = JSON.stringify(part);
+    const rawBody = snap.rawBody;
     const timestamp = String(Math.floor(now.getTime() / 1000));
     const deliveryId = `${deliveryIdPrefix}-${batch.id}-${timestamp}`;
 
@@ -100,6 +116,7 @@ export async function attemptBatchDelivery(pool, {
       fetchImpl,
       allowHttp,
       lookupImpl,
+      targetUrl: snap.targetUrl,
     });
   }
 
@@ -144,4 +161,30 @@ export async function attemptBatchDelivery(pool, {
   };
 }
 
-export const _internal = { isRetryable, rebuildPartPayload };
+// Registra uma tentativa de falha NÃO-RETRYABLE que nunca chegou a tentar rede (hoje só
+// PAYLOAD_INTEGRITY — snapshot ausente/adulterado): grava o attempt + audita + transiciona o
+// batch direto para `failed` (terminal), sem passar por `scheduleRetry`. Mesma disciplina de
+// erro sanitizado das demais falhas (nunca corpo/URL/secret no `error` gravado).
+async function failNonRetryable(pool, {
+  tenantId, batch, attemptNo, auditAction, error,
+}) {
+  await recordAttempt(pool, {
+    tenantId, batchId: batch.id, attemptNo, status: 'failure',
+    httpCode: null, durationMs: null, error,
+  });
+  await writeAudit(pool, {
+    tenantId, action: auditAction, resource: 'integration_batch', resourceId: batch.id,
+    status: 'fail', metadata: { httpCode: null },
+  });
+  await pool.query(
+    `UPDATE integration_delivery_batches
+       SET status = 'failed', attempt_count = ?, next_attempt_at = NULL, updated_at = NOW()
+     WHERE id = ?`,
+    [attemptNo, batch.id],
+  );
+  return {
+    attemptStatus: 'failed', httpCode: null, error, durationMs: null,
+  };
+}
+
+export const _internal = { isRetryable };
