@@ -70,7 +70,7 @@ export const clearContactIdentification = (id, body) => req(`/api/contacts/${enc
 export const autoIdentifyContacts = (body) => req('/api/contacts/auto-identify', { method: 'POST', body: JSON.stringify(body || {}) });
 
 // ---- Drill-down de cliente (superadmin; admin no próprio tenant) ----
-export const getClient = (id) => req(`/api/clients/${id}`); // valida acesso + {id,name,status}
+export const getClient = (id, signal) => req(`/api/clients/${id}`, signal ? { signal } : {}); // valida acesso + {id,name,status}
 export const getClientOverview = (id) => req(`/api/clients/${id}/overview`);
 export const listClientInstances = (id, params) => req(`/api/clients/${id}/instances${qs(params)}`);
 export const listClientUsers = (id, params) => req(`/api/clients/${id}/users${qs(params)}`);

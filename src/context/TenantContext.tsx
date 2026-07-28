@@ -1,21 +1,19 @@
 import * as React from 'react';
 import { getClient } from '../services/adminApi';
+import { createTenantController, type ActiveTenant } from './tenantController';
 
-// Contexto CENTRAL de "cliente ativo" (tenant) para o superadmin.
-//  - Visão global: activeTenant = null, isGlobalView = true (só superadmin).
-//  - Modo cliente: activeTenant = {id,name,status}; todas as telas operacionais atuam nesse tenant.
-// Para não-superadmin o contexto é inerte (sem seletor, sem tarja): o backend já os restringe ao
-// próprio tenant pelo JWT. O tenant NUNCA é confiado só pelo frontend — selectTenant revalida no
-// backend (GET /api/clients/:id), e todo endpoint revalida o acesso a cada requisição.
-
-export type ActiveTenant = { id: number; name: string; status?: string };
+// Contexto CENTRAL de "cliente ativo" (tenant) para o superadmin (ver docs/CONTEXTO-TENANT.md).
+// A lógica de corrida/abort vive no controller PURO (tenantController.ts, testável em node); este
+// wrapper faz a ponte com React e sincroniza o estado com a URL (?tenant=<id>).
 
 type TenantCtx = {
   isSuper: boolean;
   activeTenant: ActiveTenant | null;
   isGlobalView: boolean;
-  loading: boolean;
-  epoch: number; // muda a cada troca/saída — usado para remontar telas e limpar cache/filtros
+  loading: boolean;   // restauração inicial pela URL
+  selecting: boolean; // troca manual em andamento
+  error: string;
+  epoch: number;      // muda a cada troca do cliente ativo — usado para remontar telas
   selectTenant: (id: number) => Promise<boolean>;
   exitClient: () => void;
 };
@@ -35,51 +33,47 @@ function writeTenantParam(id: number | null) {
 }
 
 export function TenantProvider({ isSuper, children }: { isSuper: boolean; children: React.ReactNode }) {
-  const [activeTenant, setActiveTenant] = React.useState<ActiveTenant | null>(null);
-  const [loading, setLoading] = React.useState(isSuper && readTenantParam() != null);
-  const [epoch, setEpoch] = React.useState(0);
+  const controllerRef = React.useRef<ReturnType<typeof createTenantController> | null>(null);
+  if (!controllerRef.current) controllerRef.current = createTenantController({ getClient, isSuper });
+  const controller = controllerRef.current;
 
-  // Restaura o contexto do tenant a partir da URL no carregamento (reload-safe), revalidando no
-  // backend. Só superadmin; para os demais, qualquer ?tenant= é ignorado (e removido).
+  // Primeira renderização já reflete "loading" quando há um ?tenant a validar — assim o efeito de URL
+  // NÃO apaga o parâmetro antes da validação inicial concluir.
+  const [state, setState] = React.useState(() => ({
+    ...controller.getState(),
+    loading: isSuper && readTenantParam() != null,
+  }));
+
   React.useEffect(() => {
-    if (!isSuper) { writeTenantParam(null); setLoading(false); return; }
-    const id = readTenantParam();
-    if (!id) { setLoading(false); return; }
-    let alive = true;
-    getClient(id)
-      .then((t: ActiveTenant) => { if (alive) setActiveTenant(t); })
-      .catch(() => { if (alive) writeTenantParam(null); }) // inválido/inacessível → volta ao global
-      .finally(() => { if (alive) setLoading(false); });
-    return () => { alive = false; };
-  }, [isSuper]);
+    const unsub = controller.subscribe(setState);
+    controller.init(isSuper ? readTenantParam() : null);
+    return () => { unsub(); controller.dispose(); }; // desmontagem cancela requests pendentes
+  }, [controller, isSuper]);
 
-  const selectTenant = React.useCallback(async (id: number) => {
-    try {
-      const t = await getClient(id); // revalidação no backend (404 se não puder atuar)
-      setActiveTenant(t);
-      writeTenantParam(t.id);
-      setEpoch((e) => e + 1);
-      return true;
-    } catch {
-      return false;
-    }
-  }, []);
+  // URL ↔ estado. A URL só reflete o cliente ATIVO (comitado); durante a restauração inicial (loading)
+  // não tocamos no parâmetro (para não apagar o ?tenant sendo validado).
+  React.useEffect(() => {
+    if (state.loading) return;
+    writeTenantParam(state.activeTenant?.id ?? null);
+  }, [state.activeTenant, state.loading]);
 
-  const exitClient = React.useCallback(() => {
-    setActiveTenant(null);
-    writeTenantParam(null);
-    setEpoch((e) => e + 1);
-  }, []);
+  // epoch: incrementa quando o cliente ativo (comitado) muda.
+  const epochRef = React.useRef(0);
+  const prevIdRef = React.useRef<number | null>(state.activeTenant?.id ?? null);
+  const curId = state.activeTenant?.id ?? null;
+  if (curId !== prevIdRef.current) { prevIdRef.current = curId; epochRef.current += 1; }
 
   const value = React.useMemo<TenantCtx>(() => ({
     isSuper,
-    activeTenant,
-    isGlobalView: isSuper && !activeTenant,
-    loading,
-    epoch,
-    selectTenant,
-    exitClient,
-  }), [isSuper, activeTenant, loading, epoch, selectTenant, exitClient]);
+    activeTenant: state.activeTenant,
+    isGlobalView: isSuper && !state.activeTenant,
+    loading: state.loading,
+    selecting: state.selecting,
+    error: state.error,
+    epoch: epochRef.current,
+    selectTenant: (id: number) => controller.select(id),
+    exitClient: () => controller.exit(),
+  }), [isSuper, state, controller]);
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }

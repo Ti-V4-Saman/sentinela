@@ -4,21 +4,40 @@ Permite ao **superadmin** trabalhar em dois contextos: **Visão global** (consol
 operacional de um tenant) e **Modo cliente** (todas as telas operacionais atuam num tenant escolhido,
 aproximando a experiência de um admin daquele cliente — **sem** alterar o papel real).
 
-## Estado global (`src/context/TenantContext.tsx`)
+## Estado global (`src/context/TenantContext.tsx` + `tenantController.ts`)
 Contexto central consumido via `useTenant()`; evita cada tela interpretar a URL isoladamente.
 ```
-{ isSuper, activeTenant: {id,name,status}|null, isGlobalView, loading, epoch,
-  selectTenant(id): Promise<bool>, exitClient() }
+{ isSuper, activeTenant: {id,name,status}|null, isGlobalView,
+  loading, selecting, error, epoch, selectTenant(id): Promise<bool>, exitClient() }
 ```
 - **Visão global**: `activeTenant = null`, `isGlobalView = true` (só superadmin).
 - **Modo cliente**: `activeTenant` definido; `isGlobalView = false`.
 - Para **não-superadmin** o contexto é inerte (sem seletor, sem tarja) — o backend já os restringe ao
   próprio tenant pelo JWT.
+- `loading` = restauração inicial pela URL; `selecting` = troca manual em andamento (o seletor mostra
+  spinner mas permite nova escolha — a última prevalece).
 
-## Persistência na URL
-- O tenant ativo é sincronizado no parâmetro **`?tenant=<id>`** (`history.replaceState` — reload-safe).
-- No carregamento, o superadmin **revalida** `?tenant=` no backend (`GET /api/clients/:id`); inválido/
-  inacessível → volta ao global e o parâmetro é removido.
+## Proteção contra corrida na troca de tenant (`tenantController.ts`)
+A lógica de seleção vive num **controller PURO** (sem React/DOM), testável em node
+(`test/tenant-controller.test.js`, 8 casos). Garante que **somente a seleção mais recente atualize**
+`activeTenant`/URL/`epoch`/loading/erro:
+- **contador sequencial**: cada `select`/`init` recebe um token; o resultado só é aplicado se
+  `token === seq` (o mais recente). Uma resposta atrasada de uma seleção antiga é **ignorada**.
+- **AbortController**: a requisição anterior é **abortada** ao iniciar nova seleção, ao **sair** do
+  modo cliente e no **dispose** (desmontagem do provider).
+- `exitClient()` incrementa o `seq` (invalida pendentes) e aborta — uma resposta antiga **não reativa**
+  o tenant após a saída.
+Cenário resolvido: seleciona Alpha, depois Beta; se Alpha responder por último, **Beta prevalece**.
+
+## Persistência na URL (consistência URL ↔ estado)
+- A URL reflete **apenas o cliente ativo comitado** (`?tenant=<id>`, `history.replaceState` — reload-safe).
+  Assim URL e estado nunca divergem: a URL só muda quando `activeTenant` muda (após validação/saída).
+- No carregamento (`loading`) o parâmetro **não é tocado** — evita apagar o `?tenant` que está sendo
+  validado. Só após a validação a URL é sincronizada.
+- Garantias: **sucesso** → estado e URL no mesmo tenant; **falha** → não grava tenant não validado
+  (URL inalterada); **saída durante request** → sem `tenant` e contexto global; **reload válido** →
+  restaura; **reload inválido** → limpa o parâmetro; **não-superadmin** → parâmetro removido, escopo
+  inalterado.
 - Usa sempre `tenant_id` (numérico), nunca o nome como identificador.
 
 ## Revalidação e segurança (não confiar só no frontend)

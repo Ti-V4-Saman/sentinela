@@ -2,7 +2,7 @@ import * as React from 'react';
 import {
   ShieldCheck, Radio, Building2, Users, UsersRound,
   Settings, LogOut, Sun, Moon, ChevronsUpDown, Server, MessageSquare, MessagesSquare, Contact,
-  LayoutDashboard, BarChart3, ScrollText, Globe, Search, Check, LogOut as ExitIcon, ChevronDown, ChevronRight,
+  LayoutDashboard, BarChart3, ScrollText, Globe, Search, Check, LogOut as ExitIcon, ChevronDown, ChevronRight, Loader2,
 } from 'lucide-react';
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem,
@@ -45,10 +45,14 @@ type Tenant = { id: number; name: string; status?: string };
 
 // Seletor de cliente ativo (só superadmin).
 function TenantSelector() {
-  const { activeTenant, selectTenant, exitClient } = useTenant();
+  const { activeTenant, selectTenant, exitClient, selecting } = useTenant();
   const [tenants, setTenants] = React.useState<Tenant[]>([]);
   const [q, setQ] = React.useState('');
   const [open, setOpen] = React.useState(false);
+  const [pendingId, setPendingId] = React.useState<number | null>(null);
+
+  // Dispara a seleção sem bloquear novas escolhas — a última prevalece (controller resolve a corrida).
+  const pick = (id: number) => { setPendingId(id); selectTenant(id).finally(() => setPendingId((p) => (p === id ? null : p))); };
 
   React.useEffect(() => {
     if (open && tenants.length === 0) listTenants().then(setTenants).catch(() => {});
@@ -73,7 +77,9 @@ function TenantSelector() {
               <span className="block truncate text-sm font-medium">{activeTenant ? activeTenant.name : 'Visão global'}</span>
               {activeTenant && <span className="block truncate text-[10px] text-sidebar-foreground/60">Cliente #{activeTenant.id}</span>}
             </span>
-            <ChevronsUpDown className="h-4 w-4 shrink-0 text-sidebar-foreground/60" />
+            {selecting
+              ? <Loader2 className="h-4 w-4 shrink-0 animate-spin text-sidebar-foreground/60" />
+              : <ChevronsUpDown className="h-4 w-4 shrink-0 text-sidebar-foreground/60" />}
           </button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="start" className="w-56 p-0">
@@ -95,10 +101,12 @@ function TenantSelector() {
             {filtered.length === 0 ? (
               <p className="px-2 py-3 text-center text-xs text-muted-foreground">Nenhum cliente.</p>
             ) : filtered.map((t) => (
-              <DropdownMenuItem key={t.id} onClick={() => selectTenant(t.id)}>
+              <DropdownMenuItem key={t.id} onSelect={(e) => { e.preventDefault(); pick(t.id); }}>
                 <Building2 className="h-4 w-4" />
                 <span className="min-w-0 flex-1 truncate">{t.name} <span className="text-muted-foreground">#{t.id}</span></span>
-                {activeTenant?.id === t.id && <Check className="ml-auto h-3.5 w-3.5" />}
+                {pendingId === t.id && selecting
+                  ? <Loader2 className="ml-auto h-3.5 w-3.5 animate-spin" />
+                  : (activeTenant?.id === t.id && <Check className="ml-auto h-3.5 w-3.5" />)}
               </DropdownMenuItem>
             ))}
           </div>
