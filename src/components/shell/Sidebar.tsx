@@ -3,6 +3,7 @@ import {
   ShieldCheck, Radio, Building2, Users, UsersRound,
   Settings, LogOut, Sun, Moon, ChevronsUpDown, Server, MessageSquare, MessagesSquare, Contact,
   LayoutDashboard, BarChart3, ScrollText, Globe, Search, Check, LogOut as ExitIcon, ChevronDown, ChevronRight, Loader2,
+  Plug,
 } from 'lucide-react';
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem,
@@ -15,7 +16,7 @@ import { listTenants } from '../../services/adminApi';
 
 type Role = 'superadmin' | 'admin' | 'gestor' | 'usuario';
 type NavKey = 'dashboard' | 'conversations' | 'groups' | 'contacts' | 'instances'
-  | 'tenants' | 'users' | 'teams' | 'reports' | 'audit';
+  | 'tenants' | 'users' | 'teams' | 'reports' | 'audit' | 'integrations';
 
 const ROLE_LABELS: Record<string, string> = {
   superadmin: 'Superadmin', admin: 'Administrador', gestor: 'Gestor', usuario: 'Usuário',
@@ -34,11 +35,12 @@ const NAV_MAIN: Item[] = [
   { key: 'audit', label: 'Auditoria', icon: ScrollText, roles: ['superadmin', 'admin'] },
   { key: 'instances', label: 'Conexões', icon: Radio, roles: ['admin', 'gestor', 'usuario'] },
 ];
-// Configurações (recolhível).
+// Configurações (recolhível). "integrations" tem regra própria de visibilidade (ver visibleSettings).
 const NAV_SETTINGS: Item[] = [
   { key: 'tenants', label: 'Clientes', icon: Building2, roles: ['superadmin'] },
   { key: 'users', label: 'Usuários', icon: Users, roles: ['superadmin', 'admin'] },
   { key: 'teams', label: 'Equipes', icon: UsersRound, roles: ['superadmin', 'admin'] },
+  { key: 'integrations', label: 'Integrações', icon: Plug, roles: ['superadmin', 'admin'] },
 ];
 
 type Tenant = { id: number; name: string; status?: string };
@@ -166,7 +168,11 @@ export function Sidebar({
     }
     return i.roles.includes(role);
   });
-  const visibleSettings = NAV_SETTINGS.filter((i) => i.roles.includes(role));
+  // Integrações: mesma regra de "instances" — superadmin só no modo cliente; admin sempre.
+  const visibleSettings = NAV_SETTINGS.filter((i) => {
+    if (i.key === 'integrations' && isSuper) return !!activeTenant;
+    return i.roles.includes(role);
+  });
   const initial = (user?.name || 'U').charAt(0).toUpperCase();
 
   return (
