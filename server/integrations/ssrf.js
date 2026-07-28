@@ -248,3 +248,18 @@ export async function checkRedirectTarget(locationUrl, { allowHttp = false, reso
   const result = await assertSafeUrl(locationUrl, { allowHttp, resolver });
   return result.ok === true;
 }
+
+// Factory da interface pública exigida pela spec (Task 3 — "Interfaces (Produces)"):
+// safeFetchGuard(): { maxRedirects, checkRedirectTarget(locationUrl): Promise<boolean> }
+//
+// Fixa `{ allowHttp, resolver }` uma única vez e devolve um guard reutilizável para o loop de
+// entrega. IMPORTANTE (Task 7/9): o loop de entrega deve chamar `checkRedirectTarget` a CADA
+// salto de redirect (até `maxRedirects`) e NUNCA delegar o "seguir redirect" automático de um
+// cliente HTTP (ex.: `fetch`/`axios` com `redirect: 'follow'` ou `maxRedirects` nativo) — isso
+// pulearia a validação SSRF em cada hop e reabriria o vetor que esta defesa fecha.
+export function safeFetchGuard(opts = {}) {
+  return {
+    maxRedirects: MAX_REDIRECTS,
+    checkRedirectTarget: (locationUrl) => checkRedirectTarget(locationUrl, opts),
+  };
+}

@@ -5,6 +5,7 @@ import {
   assertSafeUrl,
   checkRedirectTarget,
   MAX_REDIRECTS,
+  safeFetchGuard,
 } from '../server/integrations/ssrf.js';
 
 // Resolver mock: recebe hostname, devolve o array no formato de dns.promises.lookup(host,{all:true}).
@@ -286,5 +287,25 @@ describe('ssrf — checkRedirectTarget', () => {
 describe('ssrf — constantes', () => {
   it('MAX_REDIRECTS = 3', () => {
     expect(MAX_REDIRECTS).toBe(3);
+  });
+});
+
+describe('ssrf — safeFetchGuard', () => {
+  it('expõe maxRedirects === MAX_REDIRECTS (3)', () => {
+    const guard = safeFetchGuard({ resolver: mockResolver({}) });
+    expect(guard.maxRedirects).toBe(3);
+  });
+
+  it('checkRedirectTarget do guard retorna false para metadata 169.254.169.254', async () => {
+    const guard = safeFetchGuard({ allowHttp: true, resolver: mockResolver({}) });
+    const ok = await guard.checkRedirectTarget('http://169.254.169.254/latest/meta-data');
+    expect(ok).toBe(false);
+  });
+
+  it('checkRedirectTarget do guard retorna true para IP público via resolver', async () => {
+    const resolver = mockResolver({ 'example.com': [{ address: '93.184.216.34', family: 4 }] });
+    const guard = safeFetchGuard({ resolver });
+    const ok = await guard.checkRedirectTarget('https://example.com');
+    expect(ok).toBe(true);
   });
 });
