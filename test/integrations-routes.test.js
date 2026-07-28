@@ -13,6 +13,7 @@ import { getPool, applyMigrations, withTx } from './helpers/db.js';
 import { signToken } from '../server/auth/jwt.js';
 import { authenticate } from '../server/middleware/authenticate.js';
 import { createIntegrationsRouter } from '../server/routes/integrations.js';
+import { sanitizeError } from '../server/integrations/config.js';
 
 function makeApp(conn) {
   const a = express();
@@ -426,5 +427,77 @@ describe('integrations routes — POST /batches/:id/resend (gate global, anti-co
       const [rows] = await c.query('SELECT status FROM integration_delivery_batches WHERE id = ?', [batchId]);
       expect(rows[0].status).not.toBe('blocked'); // saiu do estado blocked (virou pending_retry/failed)
     });
+  });
+
+  it('exceção interna no reenvio (secret key inválida) → 500 genérico, log só com código sanitizado (R4)', async () => {
+    await withTx(async (c) => {
+      process.env.EXTERNAL_INTEGRATIONS_ENABLED = 'true';
+      await seed(c); const app = makeApp(c);
+      const put = await request(app).put('/api/integrations').set('Authorization', bearer(ADMIN1)).send(validBody());
+      const integrationId = put.body.id;
+      const [ins] = await c.query(`INSERT INTO integration_delivery_batches
+        (tenant_id, integration_id, schema_version, window_start, window_end, part, part_total, idempotency_key, status, conversation_count, message_count)
+        VALUES (910001, ?, 1, '2026-07-20 00:00:00', '2026-07-21 00:00:00', 1, 1, 'k-resend-internal-error', 'pending', 0, 0)`,
+        [integrationId]);
+      const batchId = ins.insertId;
+
+      // Força `integrationsSecretKey()` a lançar DENTRO do handler de resend (depois do claim,
+      // exatamente o cenário do R4: attemptBatchDelivery decifraria o secret/montaria a URL) —
+      // sem precisar mockar módulos, só uma env var momentaneamente inválida.
+      const originalKey = process.env.INTEGRATIONS_SECRET_KEY;
+      process.env.INTEGRATIONS_SECRET_KEY = 'not-a-valid-key';
+
+      const logs = [];
+      const originalError = console.error;
+      console.error = (...args) => logs.push(args.join(' '));
+
+      let r;
+      try {
+        r = await request(app).post(`/api/integrations/batches/${batchId}/resend`).set('Authorization', bearer(ADMIN1));
+      } finally {
+        console.error = originalError;
+        process.env.INTEGRATIONS_SECRET_KEY = originalKey;
+      }
+
+      expect(r.status).toBe(500);
+      expect(r.body).toEqual({ error: 'Falha ao reenviar o lote' }); // resposta ao cliente já genérica
+
+      const joined = logs.join('\n');
+      expect(joined.length).toBeGreaterThan(0);
+      // Só o código fechado esperado para essa falha (config inválida) — nunca a mensagem crua/stack.
+      expect(joined).toContain(sanitizeError(new Error('INTEGRATIONS_SECRET_KEY inválida — deve decodificar para exatamente 32 bytes (64 hex ou base64)')));
+      expect(joined).not.toContain('INTEGRATIONS_SECRET_KEY inválida'); // e.message cru NUNCA logado
+      expect(joined).not.toContain('at ');       // sem frames de stack trace
+      expect(joined).not.toMatch(/https?:\/\//); // sem URL completa
+      expect(joined).not.toContain('whsec_');    // sem prefixo de secret
+
+      // Batch não fica preso em 'delivering' — o catch libera a reivindicação.
+      const [rows] = await c.query('SELECT status FROM integration_delivery_batches WHERE id = ?', [batchId]);
+      expect(rows[0].status).not.toBe('delivering');
+    });
+  });
+});
+
+describe('sanitizeError — mapeamento fechado (R4, compartilhado job+rotas)', () => {
+  it('erro com URL/detalhe sensível na mensagem nunca é ecoado — só o código fechado', () => {
+    const urlError = new TypeError('Invalid URL: https://secret-internal.example.com/webhook?token=abc123');
+    const code = sanitizeError(urlError);
+    expect(code).toBe('URL_ERROR');
+    expect(code).not.toMatch(/https?:\/\//);
+    expect(code).not.toContain('secret-internal');
+  });
+
+  it('erro de cripto (decrypt/cipher) mapeia para CRYPTO_ERROR sem detalhe', () => {
+    const cryptoError = new Error('Unsupported state or unable to authenticate data (auth tag mismatch)');
+    cryptoError.name = 'Error';
+    expect(sanitizeError(cryptoError)).toBe('CRYPTO_ERROR');
+  });
+
+  it('erro desconhecido nunca vaza e.message — cai em UNKNOWN', () => {
+    const weird = new Error('algo com um whsec_abc123 e https://exemplo.com aqui dentro');
+    const code = sanitizeError(weird);
+    expect(['UNKNOWN', 'CONFIG_ERROR']).toContain(code);
+    expect(code).not.toMatch(/https?:\/\//);
+    expect(code).not.toContain('whsec_');
   });
 });

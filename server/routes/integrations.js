@@ -3,7 +3,9 @@ import { requireActor } from '../middleware/actor.js';
 import { writeAudit, clientIp } from '../audit.js';
 import { generateSecret } from '../integrations/secret.js';
 import { assertSafeUrl } from '../integrations/ssrf.js';
-import { externalIntegrationsEnabled, isProdLike, integrationsSecretKey } from '../integrations/config.js';
+import {
+  externalIntegrationsEnabled, isProdLike, integrationsSecretKey, sanitizeError,
+} from '../integrations/config.js';
 import { buildPayload } from '../integrations/payload.js';
 import { deliverBatch } from '../integrations/delivery.js';
 import { attemptBatchDelivery } from '../integrations/deliver-batch-attempt.js';
@@ -33,6 +35,18 @@ function parsePaging(q) {
   let page = parseInt(q.page, 10);
   if (Number.isNaN(page) || page < 1) page = 1;
   return { page, limit, offset: (page - 1) * limit };
+}
+
+// Log sanitizado de exceção — MESMO padrão do job (server/jobs/dispatch-integrations.js): nunca
+// `e`/`e.message`/`e.stack` cru (poderia embutir secret/URL completa/detalhe de conexão). Só um
+// rótulo curto de evento + código fechado de `sanitizeError` + identificadores já validados no
+// escopo do request (tenantId, batchId). Ver docs/superpowers/plans/2026-07-28-etapaB-hardening.md,
+// seção "Logs sanitizados (R4)".
+function sanitizedLog(event, fields = {}) {
+  const parts = Object.entries(fields)
+    .map(([k, v]) => `${k}=${v === null || v === undefined ? '-' : v}`)
+    .join(' ');
+  console.error(`integrations route: ${event}${parts ? ' ' + parts : ''}`);
 }
 
 const RUN_AT_TIME_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
@@ -99,7 +113,7 @@ export function createIntegrationsRouter(pool) {
       req.tenantId = Number(req.actor.tenant_id);
       return next();
     } catch (e) {
-      console.error('resolve tenant (integrations):', e);
+      sanitizedLog('resolve_tenant_error', { code: sanitizeError(e) });
       return res.status(500).json({ error: 'Erro interno' });
     }
   }
@@ -111,7 +125,7 @@ export function createIntegrationsRouter(pool) {
       const row = await getConfig(pool, req.tenantId);
       res.json({ config: publicConfig(row), externalEnabled: externalIntegrationsEnabled() });
     } catch (e) {
-      console.error('get integration config:', e);
+      sanitizedLog('get_config_error', { tenantId: req.tenantId, code: sanitizeError(e) });
       res.status(500).json({ error: 'Falha ao carregar a integração' });
     }
   });
@@ -171,7 +185,7 @@ export function createIntegrationsRouter(pool) {
 
       res.json(publicConfig(updated));
     } catch (e) {
-      console.error('put integration config:', e);
+      sanitizedLog('put_config_error', { tenantId: req.tenantId, code: sanitizeError(e) });
       res.status(500).json({ error: 'Falha ao salvar a integração' });
     }
   });
@@ -189,7 +203,7 @@ export function createIntegrationsRouter(pool) {
       });
       res.json({ secret: plaintext, masked });
     } catch (e) {
-      console.error('regenerate integration secret:', e);
+      sanitizedLog('regenerate_secret_error', { tenantId: req.tenantId, code: sanitizeError(e) });
       res.status(500).json({ error: 'Falha ao gerar o segredo' });
     }
   });
@@ -255,7 +269,7 @@ export function createIntegrationsRouter(pool) {
 
       res.json({ status: result.status, http_code: result.http_code });
     } catch (e) {
-      console.error('test integration:', e);
+      sanitizedLog('test_integration_error', { tenantId: req.tenantId, code: sanitizeError(e) });
       res.status(500).json({ error: 'Falha ao testar a integração' });
     }
   });
@@ -267,7 +281,7 @@ export function createIntegrationsRouter(pool) {
       const { rows, total } = await listBatches(pool, req.tenantId, { page, limit });
       res.json({ page, limit, total, batches: rows });
     } catch (e) {
-      console.error('list integration batches:', e);
+      sanitizedLog('list_batches_error', { tenantId: req.tenantId, code: sanitizeError(e) });
       res.status(500).json({ error: 'Falha ao listar os lotes' });
     }
   });
@@ -282,7 +296,7 @@ export function createIntegrationsRouter(pool) {
       req.batch = batch;
       return next();
     } catch (e) {
-      console.error('resolve integration batch:', e);
+      sanitizedLog('resolve_batch_error', { tenantId: req.tenantId, batchId: id, code: sanitizeError(e) });
       return res.status(500).json({ error: 'Erro interno' });
     }
   });
@@ -293,7 +307,7 @@ export function createIntegrationsRouter(pool) {
       const attempts = await listAttempts(pool, req.tenantId, req.batch.id);
       res.json({ attempts });
     } catch (e) {
-      console.error('list integration batch attempts:', e);
+      sanitizedLog('list_attempts_error', { tenantId: req.tenantId, batchId: req.batch.id, code: sanitizeError(e) });
       res.status(500).json({ error: 'Falha ao listar as tentativas' });
     }
   });
@@ -350,7 +364,7 @@ export function createIntegrationsRouter(pool) {
         batchStatus: result.attemptStatus,
       });
     } catch (e) {
-      console.error('resend integration batch:', e);
+      sanitizedLog('resend_batch_error', { tenantId: req.tenantId, batchId: req.batch.id, code: sanitizeError(e) });
       try { await releaseClaim(pool, req.batch.id, { toStatus: 'failed' }); } catch { /* noop */ }
       res.status(500).json({ error: 'Falha ao reenviar o lote' });
     }

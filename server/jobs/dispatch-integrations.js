@@ -39,7 +39,7 @@ import { computeDueWindow, idempotencyKey } from '../integrations/window.js';
 import { buildPayload, chunkPayload } from '../integrations/payload.js';
 import {
   externalIntegrationsEnabled, isProdLike, integrationsSecretKey, deliveryConfig,
-  integrationsMaxCatchupDays,
+  integrationsMaxCatchupDays, sanitizeError,
 } from '../integrations/config.js';
 import {
   listActiveIntegrations, loadWindowData, createBatch, updateLastRunWindowEnd,
@@ -76,32 +76,11 @@ async function acquireLock(lockPool) {
   };
 }
 
-// Mapeia QUALQUER exceção para um código curto e fechado — nunca expõe `e.message` (poderia
-// embutir URL/secret/detalhe de conexão). Reconhece algumas classes comuns pelo `code`/`name` do
-// erro nativo do Node/mysql2; tudo que não bate um padrão conhecido cai em UNKNOWN.
-export function sanitizeError(e) {
-  if (!e) return 'UNKNOWN';
-  const code = e.code || '';
-  const name = e.name || '';
-
-  if (
-    code.startsWith('ER_') || code === 'ECONNREFUSED' || code === 'PROTOCOL_CONNECTION_LOST'
-    || code === 'ETIMEDOUT' || name === 'SqlError'
-  ) {
-    return 'DB_ERROR';
-  }
-  if (name === 'AbortError' || code === 'ABORT_ERR') return 'TIMEOUT';
-  if (code === 'ENOTFOUND' || code === 'ECONNRESET' || code === 'EHOSTUNREACH' || code === 'ENETUNREACH') {
-    return 'NETWORK';
-  }
-  if (name === 'TypeError' && /URL/i.test(String(e.message || ''))) return 'URL_ERROR';
-  if (name === 'ERR_INVALID_URL' || code === 'ERR_INVALID_URL') return 'URL_ERROR';
-  if (/CRYPTO|cipher|decrypt/i.test(name) || /cipher|decrypt|auth tag/i.test(String(e.message || ''))) {
-    return 'CRYPTO_ERROR';
-  }
-  if (/config|env|inválid/i.test(String(e.message || '')) && !code) return 'CONFIG_ERROR';
-  return 'UNKNOWN';
-}
+// `sanitizeError` mora em `../integrations/config.js` (compartilhado com as rotas — ver
+// docs/superpowers/plans/2026-07-28-etapaB-hardening.md, seção "Logs sanitizados (R4)"). Reexporta
+// aqui para não quebrar `import { sanitizeError } from '../jobs/dispatch-integrations.js'`
+// pré-existente (testes/outros módulos que já importavam deste caminho).
+export { sanitizeError };
 
 function sanitizedLog(event, fields = {}) {
   const parts = Object.entries(fields)
