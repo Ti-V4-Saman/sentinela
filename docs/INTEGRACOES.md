@@ -1,8 +1,9 @@
 # Integrações por webhook em lote
 
 Referência operacional da integração de exportação em lote (Configurações > Integrações).
-Para o desenho completo de implementação, ver `docs/superpowers/plans/2026-07-28-integracao-webhook-lote.md`
-e o round de hardening em `docs/superpowers/plans/2026-07-28-etapaB-hardening.md`.
+Para o desenho completo de implementação, ver `docs/superpowers/plans/2026-07-28-integracao-webhook-lote.md`,
+o round de hardening em `docs/superpowers/plans/2026-07-28-etapaB-hardening.md` e o snapshot imutável
+do payload em `docs/superpowers/plans/2026-07-28-etapaB-payload-snapshot.md`.
 
 ## Visão geral
 
@@ -54,6 +55,61 @@ header `X-Sentinela-Signature` (formato `sha256=<hex>`). Headers enviados em tod
 secret em texto plano (mostrado uma única vez na UI ao gerar/regenerar), comparar com
 `X-Sentinela-Signature` de forma timing-safe, e rejeitar timestamps fora de uma janela de tolerância
 razoável (proteção contra replay).
+
+## Snapshot imutável do payload
+
+**Por quê:** garante idempotência de verdade. O corpo (`rawBody`) enviado é congelado no momento da
+criação do batch — mensagens editadas ou apagadas depois, transcrições de áudio que chegam tarde,
+mudança na configuração de inclusão (`include_direct`/`groups`/`from_me`/`audio_transcripts`) ou no
+chunking **não alteram** um batch já criado. Retry automático e reenvio manual sempre entregam os
+**mesmos bytes**, com o **mesmo** `Idempotency-Key`.
+
+**O que é persistido por parte do batch:**
+
+| Campo | Descrição |
+|---|---|
+| `payload_compressed` | O corpo exato `JSON.stringify(parte)` (o `rawBody` assinado e enviado), comprimido com gzip. |
+| `payload_sha256` | SHA-256 hex sobre os **bytes exatos** do `rawBody` (não sobre o comprimido) — usado para detectar adulteração. |
+| `payload_size_bytes` | Tamanho do `rawBody` descomprimido, em bytes. |
+| `payload_encoding` | `'gzip'` — esquema versionável; a descompressão escolhida depende deste campo. |
+| `payload_created_at` | Data/hora da criação do snapshot. |
+| `target_url_snapshot` | A URL de destino da integração no momento em que o batch foi criado. |
+| `content_options_snapshot` | Flags `include_*` em vigor na criação — guardado só para auditoria, não afeta a entrega (o corpo já está congelado). |
+
+Limite absoluto de segurança: `PAYLOAD_MAX_BYTES = 8 MB` (descomprimido), além do limite de ~5 MB por
+parte já aplicado pelo chunker.
+
+**Nunca persistido no batch:** secret, assinatura, tokens, headers de autenticação, ou qualquer
+plaintext do secret.
+
+**Criação atômica:** metadata + `idempotency_key` + parte/total de partes + contagens + snapshot
+(compressed/sha256/size/encoding/created_at) + `target_url_snapshot` são gravados **juntos**, num único
+INSERT. Nunca existe um batch utilizável sem snapshot completo. Em `ON DUPLICATE KEY` (mesma janela
+reprocessada), o snapshot existente **nunca é sobrescrito** — o primeiro gravado é autoritativo — e sua
+auto-consistência é reverificada (`sha256(descomprimir(payload_compressed)) === payload_sha256`);
+divergência é tratada como erro de integridade, sem reenviar.
+
+**Entrega, retry e reenvio manual:** `attemptBatchDelivery` não reconstrói mais o payload em nenhuma
+tentativa. Ele carrega o snapshot já persistido, valida `payload_size_bytes` e `payload_sha256` contra
+os bytes lidos, e usa **exatamente** esses bytes para assinar (`HMAC-SHA256`) e enviar — sem reconsultar
+mensagens, configuração ou chunking no momento da tentativa. Um snapshot ausente (`NULL`) ou que falhe
+na validação de hash/tamanho é tratado como erro de integridade (`PAYLOAD_INTEGRITY`): o batch vai
+direto para `failed`, **sem** entrar no ciclo de retry — o sistema não tenta se autocorrigir sobre um
+payload potencialmente adulterado.
+
+**URL de entrega:** tanto o retry automático quanto o reenvio manual entregam ao `target_url_snapshot`
+(o destino configurado no momento da criação do batch), não à URL atual da integração — garante
+previsibilidade e auditoria. Permitir escolher uma URL diferente no reenvio manual é decisão explícita
+reservada a uma etapa futura.
+
+**Secret rotacionado:** cada tentativa usa o secret **atual** da integração no momento do envio
+(`getSigningSecret`) — o payload e o `Idempotency-Key` continuam imutáveis, só a assinatura HMAC muda.
+Rotacionar o secret invalida o anterior; o receptor deve validar sempre com o secret vigente. Nenhum
+plaintext de secret é armazenado junto ao batch.
+
+**Não-exposição:** nesta etapa, o corpo do payload não aparece em listagens da API de batches, em
+auditoria, em logs, nem no frontend — os endpoints de listagem retornam só metadata. O corpo só é
+carregado internamente, no momento da entrega.
 
 ## Máquina de estados e retry
 
