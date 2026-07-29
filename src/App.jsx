@@ -25,6 +25,7 @@ import ContactsView from './views/ContactsView';
 import DashboardView from './views/DashboardView';
 import ReportsView from './views/ReportsView';
 import AuditView from './views/AuditView';
+import IntegrationsView from './views/IntegrationsView';
 import { MeusDadosDialog } from './components/account/meus-dados-dialog';
 import { EditTokenDialog } from './components/instances/edit-token-dialog';
 import { CaptureWidDialog } from './components/instances/capture-wid-dialog';
@@ -338,6 +339,7 @@ function AppBody() {
       {activeView === 'tenants' && <ClientsView />}
       {activeView === 'users' && <UsersView key={scopeKey} tenantId={scopeTid} />}
       {activeView === 'teams' && <TeamsView key={scopeKey} tenantId={scopeTid} />}
+      {activeView === 'integrations' && <IntegrationsView key={scopeKey} tenantId={scopeTid} />}
 
       {/* Modais */}
       {connectingInstance && (

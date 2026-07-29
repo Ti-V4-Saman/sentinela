@@ -16,7 +16,10 @@ const pool = mysql.createPool({
   database: process.env.DB_NAME,
   waitForConnections: true,
   connectionLimit: 10,
-  queueLimit: 0
+  queueLimit: 0,
+  // UTC no round-trip JS Date <-> DATETIME/TIMESTAMP: a lógica de janela/idempotência
+  // (server/integrations/window.js) e afins assume que datas lidas/escritas no MySQL são UTC.
+  timezone: 'Z'
 });
 
 export default pool;

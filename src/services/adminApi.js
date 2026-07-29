@@ -97,6 +97,17 @@ export async function downloadReportCsv(params) {
 // ---- Auditoria (admin/superadmin) ----
 export const listAudit = (params) => req(`/api/audit${qs(params)}`);
 
+// ---- Integrações (webhook em lote) — admin no próprio tenant; superadmin só no modo cliente ----
+// Para superadmin, o backend exige tenant_id na query (modo cliente); para admin é IGNORADO
+// (escopo vem do JWT). O secret nunca volta integral — só mascarado, exceto na (re)geração.
+export const getIntegration = (tenantId) => req(`/api/integrations${qs({ tenant_id: tenantId })}`);
+export const saveIntegration = (tenantId, body) => req(`/api/integrations${qs({ tenant_id: tenantId })}`, { method: 'PUT', body: JSON.stringify(body) });
+export const regenerateIntegrationSecret = (tenantId) => req(`/api/integrations/secret${qs({ tenant_id: tenantId })}`, { method: 'POST' });
+export const testIntegration = (tenantId) => req(`/api/integrations/test${qs({ tenant_id: tenantId })}`, { method: 'POST' });
+export const listIntegrationBatches = (tenantId, params) => req(`/api/integrations/batches${qs({ tenant_id: tenantId, ...(params || {}) })}`);
+export const listIntegrationAttempts = (tenantId, batchId) => req(`/api/integrations/batches/${batchId}/attempts${qs({ tenant_id: tenantId })}`);
+export const resendIntegrationBatch = (tenantId, batchId) => req(`/api/integrations/batches/${batchId}/resend${qs({ tenant_id: tenantId })}`, { method: 'POST' });
+
 // ---- instâncias (gestão) + ponte capture_wid ----
 export const listInstances = () => req('/api/instances');
 export const captureWidCandidates = (instanceId) => req(`/api/instances/${instanceId}/capture-candidates`);

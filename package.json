@@ -15,7 +15,8 @@
     "migrate:make": "knex --knexfile knexfile.cjs migrate:make",
     "seed": "node scripts/seed.mjs",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "integrations:dispatch": "node server/jobs/dispatch-integrations.js"
   },
   "dependencies": {
     "bcryptjs": "^3.0.3",

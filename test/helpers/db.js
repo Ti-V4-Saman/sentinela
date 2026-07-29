@@ -14,6 +14,7 @@ export function getPool() {
       database: process.env.DB_NAME,
       waitForConnections: true,
       connectionLimit: 5,
+      timezone: 'Z',
     });
   }
   return _pool;
@@ -38,6 +39,7 @@ export async function withTx(fn) {
     user: process.env.DB_USER,
     password: process.env.DB_PASSWORD,
     database: process.env.DB_NAME,
+    timezone: 'Z',
   });
   await conn.beginTransaction();
   try {

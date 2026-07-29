@@ -1,15 +1,17 @@
 import * as React from 'react';
-import { Building2, MessageSquare, MessagesSquare, Radio } from 'lucide-react';
+import { Building2, MessageSquare, MessagesSquare, Radio, Plug } from 'lucide-react';
 
 // Estado orientativo exibido na VISÃO GLOBAL do superadmin para telas que só operam por cliente
-// (Conversas, Grupos, Conexões). Não mistura dados de todos os tenants — pede a seleção de um cliente.
+// (Conversas, Grupos, Conexões, Integrações). Não mistura dados de todos os tenants — pede a
+// seleção de um cliente.
 const COPY: Record<string, { icon: React.ComponentType<{ className?: string }>; title: string; desc: string }> = {
   conversations: { icon: MessageSquare, title: 'Selecione um cliente para ver as conversas', desc: 'Na visão global não há uma caixa operacional única — escolha um cliente no seletor "Cliente ativo" (canto superior esquerdo) para abrir as conversas dele.' },
   groups: { icon: MessagesSquare, title: 'Selecione um cliente para ver os grupos', desc: 'Escolha um cliente no seletor "Cliente ativo" para ver os grupos capturados dele. Relatórios globais agregados continuam disponíveis em Relatórios.' },
   connections: { icon: Radio, title: 'Selecione um cliente para ver as conexões', desc: 'As conexões são geridas por cliente. Escolha um cliente no seletor "Cliente ativo" para visualizá-las.' },
+  integrations: { icon: Plug, title: 'Selecione um cliente para ver as integrações', desc: 'A integração de envio por webhook é configurada por cliente. Escolha um cliente no seletor "Cliente ativo" para configurá-la.' },
 };
 
-export function SelectClientPrompt({ kind }: { kind: 'conversations' | 'groups' | 'connections' }) {
+export function SelectClientPrompt({ kind }: { kind: 'conversations' | 'groups' | 'connections' | 'integrations' }) {
   const c = COPY[kind] || COPY.conversations;
   const Icon = c.icon;
   return (
